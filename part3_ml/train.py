@@ -289,6 +289,14 @@ def main():
     train_probs = chosen["pipeline"].predict_proba(X_train)[:, 1]
     band_cuts = [float(np.quantile(train_probs, 2 / 3)), float(np.quantile(train_probs, 1 / 3))]
 
+    # 101 percentile points of the training score distribution, so the web page can say
+    # "this lead scores higher than 96% of the leads we have seen". That ranking is the
+    # honest way to present these numbers: class_weight='balanced' re-weights the
+    # classes, which pushes the raw predict_proba values far above the ~7% base rate
+    # (a good lead scores ~0.8, not ~0.3). They rank leads correctly, which is the job,
+    # but they are not calibrated probabilities and must not be shown as one.
+    score_percentiles = [float(v) for v in np.quantile(train_probs, np.linspace(0, 1, 101))]
+
     # Dropdown choices for the web form, taken from the training data so the page can
     # only offer values the model has actually seen.
     category_choices = {
@@ -303,6 +311,7 @@ def main():
         # Binary intake flags get checkboxes in the UI rather than number fields.
         "binary_features": ["is_overseas", "referred_by_existing_client", "has_financing_approved"],
         "band_cuts": {"high_above": band_cuts[0], "medium_above": band_cuts[1]},
+        "score_percentiles": score_percentiles,
         "metrics": {k: v for k, v in chosen.items() if k not in ("pipeline", "probs")},
         "trained_on": split_note,
         "dropped_leakage": DROPPED_LEAKAGE,
@@ -379,9 +388,14 @@ def main():
               "flags are actually populated at intake in the live CRM and not backfilled later - "
               "if `has_financing_approved` is often set after the first call, it is leakage too "
               "and I would need the CRM's audit log to tell.",
-              "- No calibration. The probabilities are usable for ranking, which is the job; "
-              "they should not be read as 'this lead has an 18% chance of buying' without a "
-              "calibration curve.",
+              "- No calibration. `class_weight='balanced'` re-weights the two classes, so the "
+              "raw `predict_proba` output sits far above the ~7% base rate - a good lead scores "
+              "around 0.8, not 0.3. The ordering is what matters for a call list and the "
+              "ordering is correct, but these are scores, not probabilities. That is why the "
+              "web page shows a score with a percentile ('higher than 96% of leads we have "
+              "seen') rather than claiming a chance of buying. Calibrating it "
+              "(`CalibratedClassifierCV` on a held-out slice of the training period) is on the "
+              "'more time' list.",
               ]
     with open(RESULTS_PATH, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines))
