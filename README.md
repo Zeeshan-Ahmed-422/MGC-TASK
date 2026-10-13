@@ -61,15 +61,19 @@ LLM_PROVIDER=openai      MODEL=gpt-4o-mini        OPENAI_API_KEY=...
 LLM_PROVIDER=anthropic   MODEL=claude-sonnet-5-5  ANTHROPIC_API_KEY=...
 ```
 
-**If Part 1 complains about quota**, that is the Google free tier, not the code. Free keys
-get a per-model daily cap (20 requests/day on `gemini-3.5-flash` when I was building) and
-5 requests/minute, and a full six-question run costs 8-11 requests. The code tells the
-difference: a short rate limit is retried with backoff, while an exhausted *daily* quota
-fails immediately with a message naming the variable to change. If you hit it, put a
-different model in `MODEL` - the daily cap is **per model**, so switching is usually
-enough - or use an OpenAI/Anthropic key. `run_test_questions.py` also waits 13 seconds
-between questions to stay under the per-minute limit; set `MGC_QUESTION_DELAY=0` on a paid
-key to turn that off.
+**`MODEL` is a fallback chain**, tried left to right, which is why the default has two
+names in it. Google's free tier caps each model *separately* - 20 requests a day on
+`gemini-3.5-flash` while I was building - and the models differ in speed by a lot: with
+quota, `gemini-3.5-flash` answers in under 2 seconds; `gemini-3.1-flash-lite` takes about
+10 but has its own allowance. So the chain is fast-one-first, dependable-one-second:
+questions are quick while the daily allowance lasts and keep working after it runs out,
+instead of the whole thing dying with a quota error. A single model name works fine too.
+
+The code tells the failure modes apart: a short rate limit is retried with backoff; an
+exhausted *daily* quota or a model this key cannot use (Google retired `gemini-2.5-flash`
+for new keys mid-build) drops straight to the next model in the chain and says so;
+anything else is raised. `run_test_questions.py` also waits 13 seconds between questions
+to stay under the 5-per-minute limit - set `MGC_QUESTION_DELAY=0` on a paid key.
 
 **Parts 2 and 3 need no API key at all.** Part 4 loads and scores leads without one; only
 the question form needs it.
@@ -124,7 +128,25 @@ JSON answer -> deterministic guardrails.
 | `assistant.py` | The prompt, the tool definition, and the guardrails. |
 | `run_test_questions.py` | The six questions from the brief -> `test_output.md`. |
 
-### One model call per question (why it is as fast as it is)
+### Three routes, decided in Python before any call is made
+
+Every question is routed before the model is involved, which is what keeps it to **one
+model call or fewer**:
+
+| Route | When | Model calls |
+|---|---|---|
+| **Registered conflict** | the question hits a `known_conflicts` topic | **0** - the answer is two documented values with their sources, built from the registry, so asking the model is pure latency |
+| **Pricing** | the question mentions money *and* a unit | **1**, with the tool *forced* and a small prompt: the model's only job is reading the question into parameters, which needs the question, not the documents |
+| **Everything else** | | **1**, with the retrieved sections and no tool schema at all |
+
+The earlier version let the model decide and then corrected it: it would answer a pricing
+question without the calculator, get caught by the guardrail, and be asked again with the
+tool forced - two calls on exactly the questions people ask most, which is what made it
+feel slow. If Python can already tell the question needs the calculator, the model should
+never have been offered the choice. The forced-retry guardrail is still there as a
+backstop, it just almost never has to fire now.
+
+### Python writes the pricing answer too
 
 A pricing question used to cost **two** sequential API calls: one for the model to extract
 the parameters, a second for it to write the sentence around the numbers Python had
@@ -497,6 +519,11 @@ collapses to a single column on a phone. If you would rather see it truly bare, 
 - One note if you edit a template while the server is running: `debug=False`, so Flask
   does not reload templates - restart it. (`debug=True` would reload, but it also imports
   the module twice and reloads the model and BM25 index with it.)
+- **If a second copy is already running, the app refuses to start.** On Windows a second
+  Flask process can bind a port that is already in use rather than failing, and then
+  requests go to whichever process the OS picks - usually the old one, running the code you
+  just changed. It cost me three rounds of confusing debugging, so `app.py` probes the port
+  first and tells you how to kill the stale process.
 
 ---
 

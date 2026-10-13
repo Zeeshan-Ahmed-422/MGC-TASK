@@ -107,6 +107,28 @@ section name>"}], "status": "<one of answered|not_in_documents|conflict|unconfir
 # mid-string, which the JSON parser then (correctly) rejected.
 MAX_TOKENS = 4000
 
+# The prompt for a pricing question. The model's whole job here is to read the question
+# into tool parameters - it never writes the answer (calculator.summarise_quote does) and
+# never sees the documents, because every number comes from pricing.json. Keeping this
+# prompt short is most of why a pricing question is quick.
+EXTRACT_SYSTEM_PROMPT = """You convert a property salesperson's question into parameters \
+for the calculate_price tool at MGC Aurora Heights. Call the tool. Do not write prose and \
+do not calculate anything yourself.
+
+Reading the question:
+- "2-bed"/"2 bed"/"two bedroom" -> "2-Bed Standard"; "3-bed"/"executive" -> \
+"3-Bed Executive"; "1-bed" -> "1-Bed Standard"; "penthouse" -> "4-Bed Penthouse"; \
+"studio" -> "Studio". Use "2-Bed Corner" ONLY if the customer names that unit type \
+exactly; for "a corner 2-bed" use "2-Bed Standard" with corner=true.
+- Set corner=true for a corner unit and margalla_facing=true for a Margalla-facing or \
+mountain-facing unit.
+- Pass floor only if the question gives one. Never invent a floor.
+- Pass block only if the question gives one ("Block B", "in B").
+- discounts: "full cash"/"pays in full" -> full_cash; "50% upfront"/"half upfront" -> \
+fifty_percent_upfront; "overseas"/"Roshan Digital"/"non-resident" -> overseas_pakistani; \
+"second unit" -> second_unit. Include every one that applies.
+"""
+
 # The one tool the model gets. The JSON Schema mirrors calculator.quote()'s signature,
 # so the model's job is reduced to filling in a form.
 TOOLS = [{
@@ -535,50 +557,56 @@ def answer(question, k=5):
     context, hits = retriever.as_context(question, k=k)
     notes = []
 
-    user_parts = [f"CONTEXT (extracts from MGC's internal documents):\n\n{context}"]
-
-    # If this question touches a known cross-document disagreement, say so loudly in the
-    # prompt, with both values, before the model answers.
-    conflict = _find_conflict(question, hits)
-    if conflict:
-        both = "\n".join(
-            f'  - "{v["value"]}" from {v["document"]} -> {v["section"]} ("{v["quote"]}")'
-            for v in conflict["values"]
-        )
-        user_parts.append(
-            f"CONFLICT ALERT: the documents disagree about the {conflict['topic']}:\n{both}\n"
-            f"You MUST use status \"conflict\", report BOTH values with BOTH sources, and "
-            f"tell the salesperson: {conflict['action']}"
-        )
-
-    user_parts.append(f"SALESPERSON'S QUESTION: {question}")
-    messages = [{"role": "user", "content": "\n\n".join(user_parts)}]
-
     # How many provider calls this question costs. A list, not an int, so the nested
     # helper below can update it; and local, not global, because the Flask server is
     # threaded and two salespeople can ask at once.
     api_calls = [0]
 
-    def ask_model(**kwargs):
+    def ask_model(system, messages, **kwargs):
         api_calls[0] += 1
-        return llm.chat(SYSTEM_PROMPT, messages, max_tokens=MAX_TOKENS, **kwargs)
+        return llm.chat(system, messages, max_tokens=MAX_TOKENS, **kwargs)
 
-    # ---- the only model call for most questions ----
-    reply = ask_model(tools=TOOLS)
-
-    # The prompt forbids the model from doing arithmetic, but a prompt is a request, not a
-    # guarantee: a smaller model answered the overseas-buyer question with its own
-    # (wrong) numbers - PKR 35,463,750 instead of the correct 36,321,600 - without ever
-    # calling the tool. So if the question plainly needs the calculator and the model did
-    # not use it, ask again with the tool forced.
+    # ------------------------------------------------------------------------------
+    # Which of the three routes does this question take? The decision is made HERE, in
+    # Python, before any call is made - which is what keeps every question to one model
+    # call or fewer. The earlier version let the model choose and then corrected it,
+    # which cost two calls on exactly the questions people ask most.
+    # ------------------------------------------------------------------------------
+    conflict = _find_conflict(question, hits)
     calculation_required = _needs_calculation(question)
-    if calculation_required and not reply["tool_calls"]:
-        notes.append("The model tried to answer a pricing question without the "
-                     "calculator; retried with the tool forced.")
-        reply = ask_model(tools=TOOLS, force_tool="calculate_price")
+
+    # ---- route 1: a registered conflict needs no model at all -------------------
+    # The answer is two documented values with their sources, and _finish() builds it
+    # from the registry whatever the model says. So asking the model is pure latency.
+    if conflict:
+        notes.append("Answered without calling the model: this is a registered "
+                     "cross-document conflict, so the answer comes from the registry.")
+        result = {"answer": "", "status": "conflict", "sources": []}
+        return _finish(question, result, None, [], hits, notes, conflict,
+                       calculation_required, started, api_calls[0])
 
     quote = None
     quotes = []  # primary + any alternative reading, for verifying the answer's numbers
+
+    # ---- route 2: a pricing question - one call, tool forced --------------------
+    # We already know in Python that this needs the calculator, so the model is not
+    # offered the choice: tool_choice forces it. Its only job is to read the question
+    # into parameters, which needs the QUESTION, not the documents - the numbers come
+    # from pricing.json. So the prompt is tiny and the call is quick.
+    if calculation_required:
+        reply = ask_model(EXTRACT_SYSTEM_PROMPT,
+                          [{"role": "user", "content": question}],
+                          tools=TOOLS, force_tool="calculate_price")
+    else:
+        # ---- route 3: everything else - one call, no tools ----------------------
+        # No tool schema is sent at all, so the prompt is smaller and the model cannot
+        # wander into a calculation it was not asked for.
+        reply = ask_model(
+            SYSTEM_PROMPT,
+            [{"role": "user",
+              "content": f"CONTEXT (extracts from MGC's internal documents):\n\n{context}"
+                         f"\n\nSALESPERSON'S QUESTION: {question}"}])
+
     if reply["tool_calls"]:
         # Python does the arithmetic AND writes the answer - see
         # calculator.summarise_quote(). That is the whole of step 2: no second API call,

@@ -35,7 +35,7 @@ load_dotenv(os.path.join(_HERE, "..", ".env"))
 PROVIDERS = {
     "gemini": {
         "key_env": "GOOGLE_API_KEY",
-        "default_model": "gemini-3.1-flash-lite",
+        "default_model": "gemini-3.5-flash,gemini-3.1-flash-lite",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "signup": "https://aistudio.google.com/apikey",
     },
@@ -67,13 +67,28 @@ def provider_name():
     return (os.getenv("LLM_PROVIDER") or "gemini").strip().lower()
 
 
-def model_name():
+def model_names():
+    """The models to try, in order. MODEL may be a comma-separated fallback chain.
+
+    WHY A CHAIN. Google's free tier caps each model separately - 20 requests a day on
+    gemini-3.5-flash when I was building - and the models differ in speed by a lot: when
+    3.5-flash has quota it answers in under 2 seconds, and the lite model takes about 10.
+    So the default is "fast one first, dependable one second": questions are quick while
+    the daily allowance lasts and keep working after it runs out, instead of the whole
+    thing dying with a quota error. One model name here is perfectly valid too.
+    """
     provider = provider_name()
     if provider not in PROVIDERS:
         raise LLMError(
             f"LLM_PROVIDER={provider!r} is not supported. Use one of: {', '.join(PROVIDERS)}."
         )
-    return (os.getenv("MODEL") or "").strip() or PROVIDERS[provider]["default_model"]
+    configured = (os.getenv("MODEL") or "").strip() or PROVIDERS[provider]["default_model"]
+    return [m.strip() for m in configured.split(",") if m.strip()]
+
+
+def model_name():
+    """The first model in the chain - what we try before any fallback."""
+    return model_names()[0]
 
 
 def api_key():
@@ -96,7 +111,9 @@ def api_key():
 
 def describe():
     """Short string for logs and the web page footer."""
-    return f"{provider_name()} / {model_name()}"
+    chain = model_names()
+    shown = chain[0] + (f" (falling back to {', '.join(chain[1:])})" if len(chain) > 1 else "")
+    return f"{provider_name()} / {shown}"
 
 
 def _to_anthropic_tools(tools):
@@ -137,6 +154,16 @@ class QuotaExhausted(LLMError):
     """The key's quota for this model is gone for the day - retrying will not help."""
 
 
+class ModelUnavailable(LLMError):
+    """This key cannot use this model at all (retired, or not granted) - try the next."""
+
+
+# Models found to be out of quota (or unusable) during this process's lifetime. A plain
+# set is enough: adding and checking are atomic under the GIL, and the worst case if two
+# threads race is one wasted retry.
+_EXHAUSTED = set()
+
+
 def _retry_after_seconds(text):
     """Pull Google's suggested retry delay out of an error body, if there is one.
 
@@ -149,8 +176,13 @@ def _retry_after_seconds(text):
 
 
 def _classify(exc):
-    """Return 'quota' (hopeless today), 'transient' (worth a retry) or 'permanent'."""
+    """Return 'quota', 'unavailable', 'transient' (worth a retry) or 'permanent'."""
     text = str(exc).lower()
+    # A model this key cannot use: retired for new keys, or never granted. Google
+    # retired gemini-2.5-flash for new keys while I was building this, which is exactly
+    # the case the fallback chain exists for.
+    if "404" in text or "not found" in text or "no longer available" in text:
+        return "unavailable"
     if "429" in text or "quota" in text:
         delay = _retry_after_seconds(str(exc))
         # A per-day quota, or any suggested wait longer than five minutes, is not
@@ -186,10 +218,14 @@ def _with_retries(call, attempts=4, first_delay=1.5):
             if kind == "quota":
                 hours = (_retry_after_seconds(str(exc)) or 0) / 3600
                 raise QuotaExhausted(
-                    f"The free-tier quota for MODEL={model_name()} is used up"
+                    "the free-tier daily quota is used up"
                     + (f" (resets in about {hours:.0f}h)" if hours else "")
-                    + ". Set a different MODEL in .env (e.g. MODEL=gemini-3.1-flash-lite "
-                      "or MODEL=gemini-3.5-flash), or switch LLM_PROVIDER."
+                    + "; add another model to MODEL in .env, or switch LLM_PROVIDER"
+                ) from exc
+            if kind == "unavailable":
+                raise ModelUnavailable(
+                    "this key cannot use that model (retired or not granted); put a model "
+                    "it can use in MODEL in .env"
                 ) from exc
             if attempt == attempts or kind == "permanent":
                 raise
@@ -200,6 +236,37 @@ def _with_retries(call, attempts=4, first_delay=1.5):
 
 
 def chat(system, messages, tools=None, max_tokens=2000, force_tool=None):
+    """Send one request, trying each model in the MODEL chain until one answers.
+
+    A model is skipped only when it cannot serve this request at all - its daily free
+    quota is gone, or the name is not one this key can use. Any other failure is already
+    retried inside _chat_one_model, and is raised rather than silently falling through,
+    because a working model returning an error is not something a different model fixes.
+    """
+    chain = model_names()
+    # Skip models already known to be out of quota, but never skip the last one - if
+    # every model is exhausted we still want the real error, not an empty chain.
+    usable = [m for m in chain if m not in _EXHAUSTED] or chain[-1:]
+
+    last_error = None
+    for position, model in enumerate(usable):
+        try:
+            reply = _chat_one_model(model, system, messages, tools, max_tokens, force_tool)
+            reply["model"] = model
+            return reply
+        except (QuotaExhausted, ModelUnavailable) as exc:
+            last_error = exc
+            # Remember it, so the next question does not spend a round trip rediscovering
+            # that this model is finished for the day. Forgotten when the process restarts,
+            # which is the right granularity for a quota that resets on a timer.
+            _EXHAUSTED.add(model)
+            if position + 1 < len(usable):
+                print(f"  ({model} unavailable, falling back to {usable[position + 1]}: "
+                      f"{str(exc)[:90]})")
+    raise last_error
+
+
+def _chat_one_model(model, system, messages, tools, max_tokens, force_tool):
     """Send one request and return a normalised reply.
 
     Args:
@@ -234,7 +301,6 @@ def chat(system, messages, tools=None, max_tokens=2000, force_tool=None):
     """
     provider = provider_name()
     key = api_key()
-    model = model_name()
 
     if provider == "anthropic":
         import anthropic
@@ -253,7 +319,9 @@ def chat(system, messages, tools=None, max_tokens=2000, force_tool=None):
                 messages=_to_anthropic_messages(messages),
                 **tool_args,
             ))
-        except Exception as exc:  # network, bad model name, rate limit, ...
+        except (QuotaExhausted, ModelUnavailable):
+            raise   # the chain in chat() handles these by trying the next model
+        except Exception as exc:  # network, rate limit, ...
             raise LLMError(f"{provider} call failed (MODEL={model}): {exc}") from exc
 
         text = "".join(b.text for b in resp.content if b.type == "text")
@@ -288,6 +356,8 @@ def chat(system, messages, tools=None, max_tokens=2000, force_tool=None):
             messages=[{"role": "system", "content": system}] + messages,
             **tool_args,
         ))
+    except (QuotaExhausted, ModelUnavailable):
+        raise   # the chain in chat() handles these by trying the next model
     except Exception as exc:
         raise LLMError(f"{provider} call failed (MODEL={model}): {exc}") from exc
 

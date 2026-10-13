@@ -211,7 +211,32 @@ def leads_page():
                            score_result=result, score_error=error, submitted=row)
 
 
+def port_already_in_use(host="127.0.0.1", port=5000):
+    """True if something is already listening there.
+
+    Worth the eight lines: on Windows a second Flask process can bind a port that is
+    already in use instead of failing, and then requests go to whichever process the OS
+    feels like - usually the OLD one, still running the code you just changed. That cost
+    me three confusing debugging rounds (a page that would not pick up new templates, an
+    answer that used a model name I had already replaced). Better to refuse to start.
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.3)
+        return probe.connect_ex((host, port)) == 0
+
+
 if __name__ == "__main__":
+    if port_already_in_use():
+        print("ERROR: something is already listening on 127.0.0.1:5000 - most likely an "
+              "older copy of this app.\n"
+              "       Stop it first (Ctrl+C in its terminal), or on Windows:\n"
+              '         powershell "Get-NetTCPConnection -LocalPort 5000 -State Listen | '
+              'ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }"\n'
+              "       Starting anyway would serve stale code without telling you.")
+        sys.exit(1)
+
     print(f"LLM provider: {llm.describe()}")
     try:
         llm.api_key()
