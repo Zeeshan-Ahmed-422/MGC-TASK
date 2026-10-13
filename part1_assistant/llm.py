@@ -189,13 +189,16 @@ def _with_retries(call, attempts=5, first_delay=3.0):
             delay *= 2
 
 
-def chat(system, messages, tools=None, max_tokens=2000):
+def chat(system, messages, tools=None, max_tokens=2000, force_tool=None):
     """Send one request and return a normalised reply.
 
     Args:
         system: the system prompt (a string).
         messages: plain user/assistant text messages (see the note below).
         tools: tool specs in OpenAI shape, or None.
+        force_tool: name of a tool the model MUST call, instead of choosing. Used when a
+            question plainly needs the price calculator and the model answered without
+            it - the prompt asked nicely, this does not.
 
     Returns:
         {
@@ -228,12 +231,17 @@ def chat(system, messages, tools=None, max_tokens=2000):
 
         client = anthropic.Anthropic(api_key=key)
         try:
+            tool_args = {}
+            if tools:
+                tool_args["tools"] = _to_anthropic_tools(tools)
+                if force_tool:
+                    tool_args["tool_choice"] = {"type": "tool", "name": force_tool}
             resp = _with_retries(lambda: client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
                 system=system,
                 messages=_to_anthropic_messages(messages),
-                **({"tools": _to_anthropic_tools(tools)} if tools else {}),
+                **tool_args,
             ))
         except Exception as exc:  # network, bad model name, rate limit, ...
             raise LLMError(f"{provider} call failed (MODEL={model}): {exc}") from exc
@@ -257,12 +265,18 @@ def chat(system, messages, tools=None, max_tokens=2000):
         client_args["base_url"] = cfg["base_url"]
     client = OpenAI(**client_args)
     try:
+        tool_args = {}
+        if tools:
+            tool_args["tools"] = tools
+            tool_args["tool_choice"] = (
+                {"type": "function", "function": {"name": force_tool}} if force_tool else "auto"
+            )
         resp = _with_retries(lambda: client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
             # The system prompt is just the first message in this API.
             messages=[{"role": "system", "content": system}] + messages,
-            **({"tools": tools, "tool_choice": "auto"} if tools else {}),
+            **tool_args,
         ))
     except Exception as exc:
         raise LLMError(f"{provider} call failed (MODEL={model}): {exc}") from exc

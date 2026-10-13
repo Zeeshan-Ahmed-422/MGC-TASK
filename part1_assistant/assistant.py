@@ -67,6 +67,10 @@ without a source is worthless. Cite only sections you actually used.
 instalments yourself, not even simple ones. If a question needs any arithmetic, call \
 the calculate_price tool and report the numbers it returns, unchanged. If the tool \
 returns caveats, pass them on to the salesperson.
+   You MUST write the actual figures into your answer - the exact price after discounts, \
+and the exact amount due at booking when the question asks about booking. Never write \
+"see the breakdown" or "refer to the calculation": the salesperson is quoting a customer \
+and needs the number in the sentence.
 
 4. STATUS. Set exactly one status:
    - "answered": the context answers the question.
@@ -225,7 +229,11 @@ def _summarise(q):
 
 
 def _run_calculator(args):
-    """Execute the tool call. Returns (payload_for_the_model, quote_dict_or_None).
+    """Execute the tool call.
+
+    Returns (payload_for_the_model, quotes), where `quotes` is [] on error, [quote] for a
+    normal request, or [quote, alternative] when the request is the ambiguous 2-bed corner
+    case. The first quote is the one the web page shows.
 
     Any CalculationError (impossible unit, unknown discount, both payment styles) is
     returned to the model as an error payload rather than raised, so the model can tell
@@ -237,7 +245,7 @@ def _run_calculator(args):
     corner = bool(args.get("corner", False))
 
     if not unit_type:
-        return {"error": "unit_type is required."}, None
+        return {"error": "unit_type is required."}, []
 
     if block is None:
         block = _infer_block(unit_type)
@@ -247,7 +255,7 @@ def _run_calculator(args):
                     f"A {unit_type} is sold in both Block A and Block B at different "
                     "prices. Ask the customer which block before quoting."
                 )
-            }, None
+            }, []
 
     # Everything except the unit type and the corner flag is shared between the two
     # readings of an ambiguous "2-bed corner" request.
@@ -262,9 +270,10 @@ def _run_calculator(args):
     try:
         q = calculator.quote(unit_type=unit_type, corner=corner, **common)
     except calculator.CalculationError as exc:
-        return {"error": str(exc)}, None
+        return {"error": str(exc)}, []
 
     payload = _summarise(q)
+    quotes = [q]
 
     # If the request is the ambiguous 2-bed corner case, price the other reading too and
     # hand both to the model, which the prompt requires it to present side by side.
@@ -273,6 +282,7 @@ def _run_calculator(args):
         alt_type, alt_corner = alternative
         try:
             alt_q = calculator.quote(unit_type=alt_type, corner=alt_corner, **common)
+            quotes.append(alt_q)
             payload["alternative_reading"] = {
                 "why": (
                     "'2-bed corner in Block B' has two defensible readings and the "
@@ -289,7 +299,7 @@ def _run_calculator(args):
             # there is no ambiguity to report - just quote the one that works.
             pass
 
-    return payload, q
+    return payload, quotes
 
 
 def _find_conflict(question, hits):
@@ -315,6 +325,98 @@ def _find_conflict(question, hits):
             if kw in question_lower or (kw in haystack and kw.split()[0] in question_lower):
                 return conflict
     return None
+
+
+# Phrases that mean "the documents say this is not settled yet". If the assistant tells
+# the salesperson one of these, the status has to say so too - whatever the model labelled
+# it. A smaller model will often get the words right and the label wrong.
+_UNCONFIRMED_PATTERNS = (
+    r"\bno .{0,40}\b(has |have )?(been )?confirmed",
+    r"\b(not|yet to be|still to be) .{0,20}confirmed\b",
+    r"\bunconfirmed\b",
+    r"\bdiscussions are ongoing\b",
+    r"\b(is|are|has been|have been) (ongoing|applied for)\b",
+    r"\bno confirmed (timeline|date)\b",
+    r"\bsubject to (approval|confirmation)\b",
+    r"\bin principle\b",
+)
+
+
+# A question needs the calculator when it asks about money AND names a unit. Both halves
+# matter: "what's the transfer fee?" is money without a unit (a policy lookup, which the
+# calculator cannot price), and "what's the rental yield on a 1-bed?" is a unit without a
+# computable amount. Neither should force a tool call; "the price of a 2-bed in Block B"
+# should.
+_MONEY_WORDS = re.compile(
+    r"\b(price|prices|pricing|total|cost|costs|amount|amounts|discount|discounts|"
+    r"premium|premiums|instalment|instalments|installment|installments|booking|token|"
+    r"due|upfront|payable|quote|schedule)\b", re.IGNORECASE)
+_UNIT_WORDS = re.compile(
+    r"\b(studio|bed|beds|bedroom|penthouse|executive|corner|unit|units|apartment|"
+    r"block|floor)\b", re.IGNORECASE)
+
+
+def _needs_calculation(question):
+    """True if this question must go through calculator.py before it can be answered."""
+    return bool(_MONEY_WORDS.search(question) and _UNIT_WORDS.search(question))
+
+
+def _quote_numbers(q):
+    """Every rupee figure the calculator produced for a quote, as whole numbers.
+
+    Used to check that the money in the answer actually came from Python. If a number in
+    the answer is not in this set, the model made it up.
+    """
+    numbers = {q["base_price"], q["list_price"], q["net_price"], q["premium_amount"],
+               q["discount_amount"], q["due_at_booking"], q["other_charges_total"]}
+    numbers.update(p["amount"] for p in q["premiums"])
+    numbers.update(d["amount"] for d in q["discounts"])
+    numbers.update(m["amount"] for m in q["payment_schedule"])
+    numbers.update(c["amount"] for c in q["other_charges"])
+    if q["upfront_50_percent"]:
+        numbers.add(q["upfront_50_percent"])
+    if q["area_sqft"]:
+        numbers.add(q["area_sqft"])
+    return {int(round(n)) for n in numbers if n}
+
+
+def _unverified_numbers(answer, allowed):
+    """Money-sized numbers in the answer that the calculator did not produce.
+
+    Only looks at numbers of 100,000 or more, so square footages, percentages, floor
+    numbers and years are ignored - we are hunting for invented prices.
+    """
+    found = set()
+    for raw in re.findall(r"\d[\d,]{4,}(?:\.\d+)?", answer or ""):
+        value = int(float(raw.replace(",", "")))
+        if value >= 100_000 and value not in allowed:
+            found.add(value)
+    return sorted(found)
+
+
+def _asserts_unconfirmed(answer):
+    """True if the answer itself says the thing is not confirmed yet."""
+    text = (answer or "").lower()
+    return any(re.search(p, text) for p in _UNCONFIRMED_PATTERNS)
+
+
+def _missing_figures(answer, question, quote):
+    """Figures the calculator produced that the answer failed to state.
+
+    A weaker model will sometimes write "refer to the calculated breakdown for the exact
+    figures" - useless to a salesperson mid-quote, and the brief's third question asks
+    for two specific numbers. Python produced those numbers, so Python can check they
+    actually appear, and append them if not.
+
+    Compares digits only, so "36,321,600" and "36321600" both count as present.
+    """
+    answer_digits = re.sub(r"[^0-9]", "", answer or "")
+    wanted = [("Price after discounts", quote["net_price"])]
+    # Only demand the booking figure when the question actually asks about booking.
+    if re.search(r"\bbooking\b|\btoken\b|\bdue\b|\bupfront\b", question, re.IGNORECASE):
+        wanted.append(("Due at booking", quote["due_at_booking"]))
+    return [(label, value) for label, value in wanted
+            if str(int(value)) not in answer_digits]
 
 
 def _extract_json(text):
@@ -395,7 +497,20 @@ def answer(question, k=5):
     # ---- call 1: the model reads the question and decides whether maths is needed ----
     reply = llm.chat(SYSTEM_PROMPT, messages, tools=TOOLS, max_tokens=MAX_TOKENS)
 
+    # The prompt forbids the model from doing arithmetic, but a prompt is a request, not a
+    # guarantee: a smaller model answered the overseas-buyer question with its own
+    # (wrong) numbers - PKR 35,463,750 instead of the correct 36,321,600 - without ever
+    # calling the tool. So if the question plainly needs the calculator and the model did
+    # not use it, ask again with the tool forced.
+    calculation_required = _needs_calculation(question)
+    if calculation_required and not reply["tool_calls"]:
+        notes.append("The model tried to answer a pricing question without the "
+                     "calculator; retried with the tool forced.")
+        reply = llm.chat(SYSTEM_PROMPT, messages, tools=TOOLS, max_tokens=MAX_TOKENS,
+                         force_tool="calculate_price")
+
     quote = None
+    quotes = []  # primary + any alternative reading, for verifying the answer's numbers
     if reply["tool_calls"]:
         # Python does the arithmetic, then we ask the model again with the computed
         # numbers written into the prompt. We deliberately do NOT replay the tool call
@@ -408,9 +523,13 @@ def answer(question, k=5):
             if tc["name"] != "calculate_price":
                 payload = {"error": f"Unknown tool {tc['name']!r}."}
             else:
-                payload, q = _run_calculator(tc["arguments"])
-                if q is not None:
-                    quote = q
+                payload, computed = _run_calculator(tc["arguments"])
+                if computed:
+                    # computed is [primary] or [primary, alternative reading]. The first
+                    # is what the web page shows; both count as legitimate figures when
+                    # we check the numbers in the answer.
+                    quote = computed[0]
+                    quotes.extend(computed)
                 if "error" in payload:
                     notes.append(f"Calculator rejected the request: {payload['error']}")
             payloads.append({"requested": tc["arguments"], "result": payload})
@@ -474,6 +593,57 @@ def answer(question, k=5):
                 result["sources"].append(src)
         if "marketing manager" not in result["answer"].lower():
             result["answer"] = result["answer"].rstrip() + " Confirm with the marketing manager before quoting a customer."
+
+    # If the answer says the thing is not confirmed yet, the status must say so too.
+    # "Who is the anchor tenant?" is the brief's example: the brochure says discussions
+    # are ongoing and none is confirmed, and a model will often write that correctly and
+    # still label it "answered".
+    if result["status"] == "answered" and _asserts_unconfirmed(result["answer"]):
+        notes.append("Re-labelled as unconfirmed: the answer itself says this is not "
+                     "confirmed in the documents.")
+        result["status"] = "unconfirmed"
+
+    # A pricing question that never reached the calculator cannot be answered safely: any
+    # figure in the reply was computed by the model. Throw it away rather than quote it.
+    if calculation_required and quote is None:
+        notes.append("Refused to answer: this question needs the price calculator, the "
+                     "model would not use it, so any figure in its reply was its own "
+                     "arithmetic and has been discarded.")
+        result["status"] = "unconfirmed"
+        result["answer"] = (
+            "I could not price this reliably - the pricing calculator did not run, so I "
+            "will not quote a figure. Please retry, or ask the marketing manager. (The "
+            "price list is the authority: no number here is ever calculated by the "
+            "language model.)"
+        )
+
+    # If the calculator ran, the figures it produced have to appear in the answer, and any
+    # money in the answer has to be a figure Python produced.
+    if quote is not None:
+        # 1. Numbers the model invented. This is the check that catches it quietly doing
+        #    its own arithmetic on top of the tool's output.
+        allowed = set()
+        for q in quotes:
+            allowed |= _quote_numbers(q)
+        invented = _unverified_numbers(result["answer"], allowed)
+        if invented:
+            notes.append(
+                "These figures in the answer did not come from the calculator and may be "
+                "the model's own arithmetic - do not quote them: "
+                + ", ".join(f"{v:,}" for v in invented)
+                + ". The breakdown below is the authoritative version."
+            )
+            result["status"] = "unconfirmed"
+
+        # 2. Figures the model left out. "See the breakdown" is not an answer to someone
+        #    mid-quote, so Python appends its own numbers.
+        missing = _missing_figures(result["answer"], question, quote)
+        if missing:
+            figures = "; ".join(f"{label} PKR {value:,.0f}" for label, value in missing)
+            result["answer"] = result["answer"].rstrip().rstrip(".") + (
+                f". From the Python calculation: {figures}."
+            )
+            notes.append(f"Appended figures the model left out of its answer: {figures}.")
 
     # "An answer without a source is wrong" - the brief. So an answered/conflict reply
     # with no citation is downgraded rather than shown as fact.

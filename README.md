@@ -231,10 +231,23 @@ than hidden:
 - **Unconfirmed.** "Who is the anchor tenant?" returns `unconfirmed`, citing the
   brochure's Commercial Podium section, which says discussions are ongoing and no tenant
   has been confirmed.
-- **Guardrails that do not trust the model.** An answer with no source is downgraded to
-  `unconfirmed` (the brief: an answer without a source counts as wrong). An unrecognised
-  status becomes `unconfirmed`. A reply that is not valid JSON is passed through as raw
-  text, flagged, and never presented as verified.
+- **Guardrails that do not trust the model.** Every one of these is code, not prompting,
+  and each exists because a model actually got it wrong during testing:
+  - An answer with no source is downgraded to `unconfirmed` (the brief: an answer without
+    a source counts as wrong).
+  - An unrecognised status becomes `unconfirmed`; a reply that is not valid JSON is passed
+    through as raw text, flagged, and never presented as verified.
+  - A registered conflict is forced, both sources added, and a single-value answer
+    replaced.
+  - **If the answer says something is not confirmed, the status is re-labelled
+    `unconfirmed`** - for "who is the anchor tenant?" the model wrote the right sentence
+    ("no anchor tenant has been confirmed") and still labelled it `answered`.
+  - **If the calculator ran, its figures must appear in the answer.** The model once
+    replied "refer to the calculated breakdown for the exact figures", which is useless to
+    someone mid-quote, so Python checks its own numbers are present (digits only, so
+    `36,321,600` and `36321600` both count) and appends them if not. Each fix is reported
+    in the `notes` list and shown on the web page, so you can always see the guardrail
+    fired rather than wondering.
 
 ---
 
