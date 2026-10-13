@@ -9,3 +9,6 @@ venv/
 
 # DuckDB files (we run in-memory, but just in case)
 *.duckdb
+
+# My own interview notes - deliberately not published to the repo.
+EXPLANATION.md
