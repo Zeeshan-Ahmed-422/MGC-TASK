@@ -61,7 +61,9 @@ a gap from general knowledge about Pakistani real estate, never estimate a numbe
 
 2. SOURCES. Every answer must cite the document and section it came from, copied \
 exactly as they appear in the DOCUMENT: and SECTION: labels of the context. An answer \
-without a source is worthless. Cite only sections you actually used.
+without a source is worthless. Cite only sections you actually used. In the answer text, \
+always refer to a document by its NAME - never by its context number, so never write \
+"document [1]" or "[2]"; the salesperson cannot see those numbers.
 
 3. NO ARITHMETIC. You are not allowed to calculate prices, premiums, discounts or \
 instalments yourself, not even simple ones. If a question needs any arithmetic, call \
@@ -394,6 +396,29 @@ def _unverified_numbers(answer, allowed):
     return sorted(found)
 
 
+def _resolve_context_references(answer, hits):
+    """Turn "document [2]" into the document's actual name.
+
+    The context we send is numbered [1]..[k] so the model can refer to a specific chunk,
+    and a model will sometimes carry those numbers into the answer ("document [2] states
+    2%"). The salesperson never sees the numbering, so it reads as a glitch. We know
+    exactly what each number was, so we can substitute the real name.
+    """
+    if not answer:
+        return answer
+
+    def replace(match):
+        index = int(match.group("n"))
+        if 1 <= index <= len(hits):
+            return hits[index - 1]["document"]
+        return match.group(0)
+
+    # "document [2]" / "Doc [2]" / "in [2]" -> the name; then any bare "[2]" left over.
+    answer = re.sub(r"\b(?:the\s+)?docu?me?n?t?s?\s*\[(?P<n>\d+)\]", replace, answer,
+                    flags=re.IGNORECASE)
+    return re.sub(r"\[(?P<n>\d+)\]", replace, answer)
+
+
 def _asserts_unconfirmed(answer):
     """True if the answer itself says the thing is not confirmed yet."""
     text = (answer or "").lower()
@@ -563,34 +588,39 @@ def answer(question, k=5):
 
     # ---- deterministic guardrails: do not trust the model to have obeyed ----------
 
+    # Replace any leaked context numbering ("document [2]") with the real document name.
+    result["answer"] = _resolve_context_references(result["answer"], hits)
+
     if result["status"] not in STATUSES:
         notes.append(f"Model returned an unrecognised status {result['status']!r}; treating as unconfirmed.")
         result["status"] = "unconfirmed"
 
     if conflict:
-        # Force the conflict, whatever the model decided.
-        if result["status"] != "conflict":
-            # The model tried to resolve the disagreement (e.g. answered "2%"). Its
-            # answer is not safe to show, so replace it with a deterministic statement
-            # of both values built from pricing.json.
-            notes.append(
-                "Forced status=conflict and rewrote the answer: this topic is a known "
-                "cross-document disagreement and the model gave a single value."
-            )
-            result["status"] = "conflict"
-            both = "; ".join(
-                f'{v["value"]} according to {v["document"]} ({v["section"]})'
-                for v in conflict["values"]
-            )
-            result["answer"] = (
-                f"The documents disagree about the {conflict['topic']}: {both}. "
-                f"{conflict['action']}"
-            )
-        # Make sure both sources are cited even if the model only cited one.
-        for v in conflict["values"]:
-            src = {"document": v["document"], "section": v["section"]}
-            if src not in result["sources"]:
-                result["sources"].append(src)
+        # A registered conflict is answered deterministically from pricing.json, and the
+        # model's prose is discarded. There is nothing for it to add here - the answer is
+        # just "these two documents say these two different things" - and letting it
+        # write that sentence is a risk with no upside. In testing it produced the two
+        # right values attributed to the WRONG documents (2% to the FAQ, 2.5% to the
+        # price list, which is the wrong way round). The registry already holds each
+        # value with its own document and section, so the attribution cannot be wrong.
+        notes.append(
+            f"The answer for the {conflict['topic']} is generated from the known-conflict "
+            "registry, not written by the model: it is a registered cross-document "
+            "disagreement, so both values and both sources are stated verbatim."
+        )
+        result["status"] = "conflict"
+        both = "; ".join(
+            f'{v["value"]} according to {v["document"]} ({v["section"]})'
+            for v in conflict["values"]
+        )
+        result["answer"] = (
+            f"The documents disagree about the {conflict['topic']}: {both}. "
+            f"{conflict['action']}"
+        )
+        # Cite both, in the registry's order, replacing whatever the model cited.
+        result["sources"] = [
+            {"document": v["document"], "section": v["section"]} for v in conflict["values"]
+        ]
         if "marketing manager" not in result["answer"].lower():
             result["answer"] = result["answer"].rstrip() + " Confirm with the marketing manager before quoting a customer."
 

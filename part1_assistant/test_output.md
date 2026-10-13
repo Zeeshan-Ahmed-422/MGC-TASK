@@ -10,7 +10,7 @@ the model. Every answer carries the document and section it came from.
 
 **Status:** `answered`
 
-The base price for a 2-Bed Standard unit in Block B is PKR 22,425,000. Under the Standard Payment Plan, the amount due at booking is PKR 2,242,500. Please note that no floor was given, so no floor premium was applied. Floors 13–19 add +4% and floors 20–22 add +7% to the price. Additionally, utility connection charges (PKR 285,000), a mandatory parking slot (PKR 1,450,000), and 12 months of maintenance advance (PKR 131,100) are not included in the base price.
+The base price for a 2-Bed Standard unit in Block B is PKR 22,425,000. Under the standard 4-year payment plan, the amount due at booking is PKR 2,242,500. Note: No floor was given, so no floor premium was applied. Floors 13–19 add +4% and floors 20–22 add +7% (price list, Location Premiums).
 
 **Sources:**
 
@@ -46,6 +46,10 @@ The base price for a 2-Bed Standard unit in Block B is PKR 22,425,000. Under the
     - No floor was given, so no floor premium was applied. Floors 13–19 add +4% and floors 20–22 add +7% (price list, Location Premiums).
 ```
 
+**Notes from the guardrails:**
+
+- The model tried to answer a pricing question without the calculator; retried with the tool forced.
+
 **Retrieved chunks (BM25):** Unit Configuration (10.654), Base Prices (Block B) (8.275), Base Prices (Block A) (7.15), Overview (5.999), Frequently Asked (3.745)
 
 ---
@@ -54,7 +58,7 @@ The base price for a 2-Bed Standard unit in Block B is PKR 22,425,000. Under the
 
 **Status:** `answered`
 
-Please confirm with the customer which 2-bed unit they want. The '2-Bed Corner' (1,310 sq ft) total is PKR 29,540,500, with PKR 2,954,050 due at booking. Caveat: the 3% corner premium was not added as it is a base unit type; confirm if this should be added. The '2-Bed Standard' (1,150 sq ft) total is PKR 25,340,250, with PKR 2,534,025 due at booking. This includes all three premiums (13% total). Other charges (utility, parking, maintenance) apply to both.
+There are two options for a 2-bed Margalla-facing corner unit on floor 15. Please confirm which the customer prefers: 1) For the 2-Bed Corner (1,310 sq ft), the price is PKR 29,540,500 (booking PKR 2,954,050). Note: '2-Bed Corner' is a specific unit type, so the +3% corner premium was not added to avoid double charging; confirm this with the marketing manager. 2) For the 2-Bed Standard (1,150 sq ft) with the +3% corner premium, the price is PKR 25,340,250 (booking PKR 2,534,025). Additional charges for both include utility connection (PKR 285,000) and mandatory parking (PKR 1,450,000).
 
 **Sources:**
 
@@ -108,7 +112,7 @@ Please confirm with the customer which 2-bed unit they want. The '2-Bed Corner' 
 
 **Status:** `answered`
 
-The discounted price for the 3-Bed Executive is PKR 36,321,600. The standard booking amount is PKR 3,632,160. Caveats: No floor premium was applied as the floor is unspecified (floors 13–19 add +4%, 20–22 add +7%). The payment percentages are applied to the discounted price, but please confirm if these should be based on the original list price. Additionally, there is no separate payment schedule for a 50% upfront buyer, so confirm with the marketing manager whether the 10% booking figure remains applicable.
+The discounted price for a 3-Bed Executive is PKR 36,321,600. The token/booking amount is PKR 3,632,160. Note: Floor premiums are not included (floors 13–19 add 4%, 20–22 add 7%). The payment schedule percentages may apply to the base list price rather than the discounted price (confirm with marketing). Additionally, as there is no specific 50% upfront schedule, please confirm with the marketing manager whether the token amount remains 10% of the discounted price or another structure applies.
 
 **Sources:**
 
@@ -159,12 +163,16 @@ The discounted price for the 3-Bed Executive is PKR 36,321,600. The standard boo
 
 **Status:** `conflict`
 
-There is a conflict regarding the transfer fee. The 'MGC Aurora Heights — Price List & Payment Plan' (Section: Other Charges) states the fee is 2% of the current list price. However, the 'MGC Developments — Booking Policy & Sales FAQ' (Section: Transfers) states it is 2.5% of the current list price. Do not pick one; quote both figures with their respective sources and confirm with the marketing manager before quoting a customer.
+The documents disagree about the transfer fee: 2% of the current list price according to MGC Aurora Heights — Price List & Payment Plan (Other Charges); 2.5% of the current list price according to MGC Developments — Booking Policy & Sales FAQ (Transfers). Do not pick one. Quote both with their sources and confirm with the marketing manager before quoting a customer.
 
 **Sources:**
 
 - MGC Aurora Heights — Price List & Payment Plan -> *Other Charges*
 - MGC Developments — Booking Policy & Sales FAQ -> *Transfers*
+
+**Notes from the guardrails:**
+
+- The answer for the transfer fee is generated from the known-conflict registry, not written by the model: it is a registered cross-document disagreement, so both values and both sources are stated verbatim.
 
 **Retrieved chunks (BM25):** Transfers (4.67), Other Charges (4.423), Notes (3.12), Frequently Asked (2.779), Overseas Buyers (2.72)
 
@@ -174,7 +182,7 @@ There is a conflict regarding the transfer fee. The 'MGC Aurora Heights — Pric
 
 **Status:** `not_in_documents`
 
-MGC does not publish rental yield projections. Sales staff must not provide projections verbally. Please direct this query to the marketing manager.
+MGC does not publish rental yield projections. Sales staff are strictly prohibited from providing such projections verbally and must direct all related queries to the marketing manager.
 
 **Sources:**
 
@@ -188,7 +196,7 @@ MGC does not publish rental yield projections. Sales staff must not provide proj
 
 **Status:** `unconfirmed`
 
-There is currently no anchor tenant confirmed for the commercial podium; anchor tenancy discussions are ongoing.
+No anchor tenant has been confirmed for the commercial podium as of the project brochure's issue date; discussions are ongoing.
 
 **Sources:**
 

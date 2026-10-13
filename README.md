@@ -217,13 +217,20 @@ than hidden:
   `unconfirmed`.
 - **Conflicts.** `pricing.json` carries a `known_conflicts` registry - today, the transfer
   fee, which is **2%** in the price list (Other Charges) and **2.5%** in the booking FAQ
-  (Transfers). If a question touches a registered topic, the prompt is given both values
-  and ordered to report both, and then, in code, the status is forced to `conflict`, both
-  sources are added to the citation list, and if the model tried to pick one its answer
-  is **replaced** with a deterministic sentence stating both values and telling the
-  salesperson to confirm with the marketing manager. The model cannot resolve this
-  conflict even if it wants to. The prompt also instructs the general case, so an
-  unregistered disagreement can still be caught - but only the registry is guaranteed.
+  (Transfers), each recorded with its own document, section and verbatim quote. If a
+  question touches a registered topic, **the answer is generated from the registry in
+  Python and the model's prose is discarded.** There is nothing for the model to add -
+  the answer is "these two documents say these two different things" - and letting it
+  write that sentence turned out to be a risk with no upside: in testing it produced the
+  two correct values attributed to the *wrong* documents (2% to the FAQ, 2.5% to the price
+  list, exactly backwards). Generating it from the registry means the value, the document
+  and the section cannot come apart. The prompt also instructs the general case, so an
+  unregistered disagreement can still be caught by the model - but only the registry is
+  guaranteed.
+- **Leaked context numbering.** The retrieved sections are labelled `[1]`-`[5]` so the
+  model can refer to one, and it sometimes writes "document [2] states..." into the
+  answer, which is meaningless to a salesperson. Since Python knows what each number was,
+  it substitutes the real document name.
 - **Refusals.** "What's the rental yield on a 1-bed?" returns `not_in_documents`. The
   interesting part is that the refusal is itself grounded: the FAQ explicitly says MGC
   does not publish rental yield projections and that staff must not give them verbally,
