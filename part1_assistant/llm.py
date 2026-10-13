@@ -19,6 +19,8 @@ from it, so the rest of the codebase never sees the difference.
 
 import json
 import os
+import re
+import time
 
 from dotenv import load_dotenv
 
@@ -33,7 +35,7 @@ load_dotenv(os.path.join(_HERE, "..", ".env"))
 PROVIDERS = {
     "gemini": {
         "key_env": "GOOGLE_API_KEY",
-        "default_model": "gemini-2.5-flash",
+        "default_model": "gemini-3.1-flash-lite",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
         "signup": "https://aistudio.google.com/apikey",
     },
@@ -112,37 +114,79 @@ def _to_anthropic_tools(tools):
 def _to_anthropic_messages(messages):
     """OpenAI-shaped history -> Anthropic-shaped history.
 
-    Differences we have to bridge:
-      - a tool call is an assistant "tool_use" content block, not a `tool_calls` field;
-      - a tool result is a USER message with a "tool_result" block, not role="tool";
-      - Anthropic takes `system` as its own argument (handled in chat()).
+    Only plain user/assistant text messages are ever sent (see the note on tool calls
+    in chat()), so this is a simple rename of the content field. Anthropic takes
+    `system` as its own argument, which chat() handles.
     """
-    out = []
-    for m in messages:
-        if m["role"] == "tool":
-            out.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": m["tool_call_id"],
-                    "content": m["content"],
-                }],
-            })
-        elif m["role"] == "assistant" and m.get("tool_calls"):
-            blocks = []
-            if m.get("content"):
-                blocks.append({"type": "text", "text": m["content"]})
-            for tc in m["tool_calls"]:
-                blocks.append({
-                    "type": "tool_use",
-                    "id": tc["id"],
-                    "name": tc["function"]["name"],
-                    "input": json.loads(tc["function"]["arguments"] or "{}"),
-                })
-            out.append({"role": "assistant", "content": blocks})
-        else:
-            out.append({"role": m["role"], "content": m.get("content") or ""})
-    return out
+    return [{"role": m["role"], "content": m.get("content") or ""} for m in messages]
+
+
+# Failures worth retrying: rate limits, timeouts, and the provider being briefly
+# overloaded. Matched on the error text rather than per-SDK exception classes, so one
+# list covers all three providers.
+_TRANSIENT_MARKERS = ("429", "500", "502", "503", "504", "overloaded",
+                      "high demand", "unavailable", "timeout", "timed out")
+
+
+class QuotaExhausted(LLMError):
+    """The key's quota for this model is gone for the day - retrying will not help."""
+
+
+def _retry_after_seconds(text):
+    """Pull Google's suggested retry delay out of an error body, if there is one.
+
+    Google returns e.g. "'retryDelay': '25s'" for a per-minute limit and something like
+    '37145s' (ten hours) when the per-DAY free-tier quota is gone. That number is how we
+    tell a short wait from a dead end.
+    """
+    match = re.search(r"retryDelay'?:?\s*'?(\d+)s", text)
+    return int(match.group(1)) if match else None
+
+
+def _classify(exc):
+    """Return 'quota' (hopeless today), 'transient' (worth a retry) or 'permanent'."""
+    text = str(exc).lower()
+    if "429" in text or "quota" in text:
+        delay = _retry_after_seconds(str(exc))
+        # A per-day quota, or any suggested wait longer than five minutes, is not
+        # something a retry loop can fix - fail fast with a message that says so.
+        if "perday" in text.replace("_", "").replace("-", "") or (delay and delay > 300):
+            return "quota"
+        return "transient"
+    if any(marker in text for marker in _TRANSIENT_MARKERS):
+        return "transient"
+    return "permanent"
+
+
+def _with_retries(call, attempts=5, first_delay=3.0):
+    """Run `call`, retrying transient provider failures with exponential backoff.
+
+    Google's free tier returns 503 "experiencing high demand" and short 429s often
+    enough that one unlucky question would otherwise fail a whole six-question run, so
+    this retries five times with a growing delay (3s, 6s, 12s, 24s). A bad model name or
+    a bad key is not retried, and neither is an exhausted daily quota - both would just
+    fail five times and waste the reviewer's time.
+    """
+    delay = first_delay
+    for attempt in range(1, attempts + 1):
+        try:
+            return call()
+        except Exception as exc:
+            kind = _classify(exc)
+            if kind == "quota":
+                hours = (_retry_after_seconds(str(exc)) or 0) / 3600
+                raise QuotaExhausted(
+                    f"The free-tier quota for MODEL={model_name()} is used up"
+                    + (f" (resets in about {hours:.0f}h)" if hours else "")
+                    + ". Set a different MODEL in .env (e.g. MODEL=gemini-3.1-flash-lite "
+                      "or MODEL=gemini-3.5-flash), or switch LLM_PROVIDER."
+                ) from exc
+            if attempt == attempts or kind == "permanent":
+                raise
+            print(f"  (provider error, retry {attempt}/{attempts - 1} in {delay:.0f}s: "
+                  f"{str(exc)[:110]})")
+            time.sleep(delay)
+            delay *= 2
 
 
 def chat(system, messages, tools=None, max_tokens=2000):
@@ -150,15 +194,30 @@ def chat(system, messages, tools=None, max_tokens=2000):
 
     Args:
         system: the system prompt (a string).
-        messages: history in OpenAI shape (see module docstring).
+        messages: plain user/assistant text messages (see the note below).
         tools: tool specs in OpenAI shape, or None.
 
     Returns:
         {
           "text": str,                  # the assistant's text, "" if it only called tools
           "tool_calls": [ {"id": str, "name": str, "arguments": dict} ],
-          "assistant_message": dict,    # OpenAI-shaped, append it straight to `messages`
         }
+
+    NOTE ON TOOL CALLS - why there is no tool-result message type here.
+    The obvious design is the standard agent loop: send the tool's result back as a
+    `role="tool"` message and let the model continue the same conversation. I started
+    there and Gemini rejected it:
+
+        400 Function call is missing a thought_signature in functionCall parts.
+
+    Gemini attaches an opaque signature to each function call and requires it back when
+    you replay that call in the history; the OpenAI-compatible endpoint does not expose
+    it, so the replay can never be valid. Rather than special-case one provider, the
+    assistant does this instead: first call extracts the parameters, Python computes the
+    answer, and then a SECOND, fresh call is made with the computed numbers written into
+    the prompt as context. No tool message is ever replayed, so nothing provider-specific
+    leaks in here, and the model still cannot do the arithmetic itself - it only ever
+    sees numbers Python produced. See assistant.py.
     """
     provider = provider_name()
     key = api_key()
@@ -169,13 +228,13 @@ def chat(system, messages, tools=None, max_tokens=2000):
 
         client = anthropic.Anthropic(api_key=key)
         try:
-            resp = client.messages.create(
+            resp = _with_retries(lambda: client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
                 system=system,
                 messages=_to_anthropic_messages(messages),
                 **({"tools": _to_anthropic_tools(tools)} if tools else {}),
-            )
+            ))
         except Exception as exc:  # network, bad model name, rate limit, ...
             raise LLMError(f"{provider} call failed (MODEL={model}): {exc}") from exc
 
@@ -184,32 +243,27 @@ def chat(system, messages, tools=None, max_tokens=2000):
             {"id": b.id, "name": b.name, "arguments": b.input}
             for b in resp.content if b.type == "tool_use"
         ]
-        # Rebuild the reply in OpenAI shape so the caller stays provider-agnostic.
-        assistant_message = {"role": "assistant", "content": text}
-        if tool_calls:
-            assistant_message["tool_calls"] = [
-                {
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {"name": tc["name"], "arguments": json.dumps(tc["arguments"])},
-                }
-                for tc in tool_calls
-            ]
-        return {"text": text, "tool_calls": tool_calls, "assistant_message": assistant_message}
+        return {"text": text, "tool_calls": tool_calls}
 
     # ---- gemini and openai: identical code, different base_url + key ----------
     from openai import OpenAI
 
     cfg = PROVIDERS[provider]
-    client = OpenAI(api_key=key, base_url=cfg["base_url"]) if cfg["base_url"] else OpenAI(api_key=key)
+    # timeout: a hung request must not block the whole run. max_retries=0: the SDK's own
+    # silent retries fought with _with_retries() above, which at least logs what it is
+    # doing - one retry policy is easier to reason about than two.
+    client_args = {"api_key": key, "timeout": 90.0, "max_retries": 0}
+    if cfg["base_url"]:
+        client_args["base_url"] = cfg["base_url"]
+    client = OpenAI(**client_args)
     try:
-        resp = client.chat.completions.create(
+        resp = _with_retries(lambda: client.chat.completions.create(
             model=model,
             max_tokens=max_tokens,
             # The system prompt is just the first message in this API.
             messages=[{"role": "system", "content": system}] + messages,
             **({"tools": tools, "tool_choice": "auto"} if tools else {}),
-        )
+        ))
     except Exception as exc:
         raise LLMError(f"{provider} call failed (MODEL={model}): {exc}") from exc
 
@@ -220,22 +274,11 @@ def chat(system, messages, tools=None, max_tokens=2000):
             args = json.loads(tc.function.arguments or "{}")
         except json.JSONDecodeError:
             # A model can emit malformed JSON arguments. Surface it as a tool error
-            # rather than crashing; assistant.py feeds the error back to the model.
+            # rather than crashing; assistant.py turns it into an error for the user.
             args = {"_malformed_arguments": tc.function.arguments}
         tool_calls.append({"id": tc.id, "name": tc.function.name, "arguments": args})
 
-    assistant_message = {"role": "assistant", "content": choice.content or ""}
-    if choice.tool_calls:
-        assistant_message["tool_calls"] = [
-            {
-                "id": tc.id,
-                "type": "function",
-                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-            }
-            for tc in choice.tool_calls
-        ]
-    return {"text": choice.content or "", "tool_calls": tool_calls,
-            "assistant_message": assistant_message}
+    return {"text": choice.content or "", "tool_calls": tool_calls}
 
 
 if __name__ == "__main__":

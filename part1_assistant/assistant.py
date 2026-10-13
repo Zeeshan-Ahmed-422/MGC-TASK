@@ -80,13 +80,25 @@ and tell the salesperson to confirm with the marketing manager before quoting.
 ongoing, applied for, or subject to approval. Say it is unconfirmed and cite where the \
 document says so.
 
-5. OUTPUT. Reply with a single JSON object and nothing else - no prose before or after, \
-no markdown code fences:
+5. AMBIGUITY. If the calculation results contain an "alternative_reading", the documents \
+do not settle which unit the customer means. Give BOTH totals with the unit each one \
+refers to, and ask the salesperson to confirm which unit the customer wants. Do not pick \
+one silently.
+
+6. OUTPUT. Reply with a single JSON object and nothing else - no prose before or after, \
+no markdown code fences. Keep "answer" under 120 words: state the numbers, the key \
+caveats, and stop. Do not restate the whole calculation - the salesperson is shown the \
+full breakdown separately.
 
 {"answer": "<plain English for the salesperson, including the numbers the tool \
 returned>", "sources": [{"document": "<exact document name>", "section": "<exact \
 section name>"}], "status": "<one of answered|not_in_documents|conflict|unconfirmed>"}
 """
+
+# Generous enough for the JSON answer plus the reasoning tokens that Gemini 3.x models
+# spend before writing anything. At 2000 a long pricing answer came back truncated
+# mid-string, which the JSON parser then (correctly) rejected.
+MAX_TOKENS = 4000
 
 # The one tool the model gets. The JSON Schema mirrors calculator.quote()'s signature,
 # so the model's job is reduced to filling in a form.
@@ -161,46 +173,32 @@ def _infer_block(unit_type):
     return None
 
 
-def _run_calculator(args):
-    """Execute the tool call. Returns (payload_for_the_model, quote_dict_or_None).
+def _ambiguous_two_bed_alternative(unit_type, block, corner):
+    """"A 2-bed corner in Block B" has two defensible readings. Return the other one.
 
-    Any CalculationError (impossible unit, unknown discount, both payment styles) is
-    returned to the model as an error payload rather than raised, so the model can tell
-    the salesperson what is wrong instead of the request 500-ing.
+    Block B sells a distinct `2-Bed Corner` unit type (1,310 sq ft, base 26,855,000) AND
+    the price list has a separate +3% corner premium whose own worked example is a corner
+    2-bed on floor 15. So "2-bed corner" can mean either:
+      (a) a 2-Bed Standard (1,150 sq ft) plus the +3% premium  -> base x 1.13
+      (b) the larger 2-Bed Corner unit type                    -> base x 1.10
+    Those are different units at different prices and the documents do not say which the
+    customer means. Rather than pick, we price both and make the model show both.
+
+    Returns (unit_type, corner) for the alternative reading, or None if not ambiguous.
     """
-    args = dict(args or {})
-    unit_type = args.get("unit_type")
-    block = (args.get("block") or "").strip().upper() or None
+    if block != "B":
+        return None
+    if unit_type == "2-Bed Standard" and corner:
+        return ("2-Bed Corner", False)   # corner-ness is already in that unit's base price
+    if unit_type == "2-Bed Corner":
+        return ("2-Bed Standard", True)  # the smaller unit plus the +3% premium
+    return None
 
-    if not unit_type:
-        return {"error": "unit_type is required."}, None
 
-    if block is None:
-        block = _infer_block(unit_type)
-        if block is None:
-            return {
-                "error": (
-                    f"A {unit_type} is sold in both Block A and Block B at different "
-                    "prices. Ask the customer which block before quoting."
-                )
-            }, None
-
-    try:
-        q = calculator.quote(
-            unit_type=unit_type,
-            block=block,
-            floor=args.get("floor"),
-            corner=bool(args.get("corner", False)),
-            margalla_facing=bool(args.get("margalla_facing", False)),
-            discounts=args.get("discounts") or [],
-            additional_parking_slots=int(args.get("additional_parking_slots") or 0),
-        )
-    except calculator.CalculationError as exc:
-        return {"error": str(exc)}, None
-
-    # Hand the model a compact summary - the numbers and their sources - not the whole
-    # nested dict. The full dict goes back to the caller (and the web page) separately.
-    payload = {
+def _summarise(q):
+    """Compact view of a quote for the model: the numbers and their sources, not the
+    whole nested dict. The full dict goes to the caller (and the web page) separately."""
+    return {
         "unit": f"{q['unit_type']}, Block {q['block']}",
         "currency": q["currency"],
         "base_price": q["base_price"],
@@ -224,6 +222,73 @@ def _run_calculator(args):
             f"{s['source']['document']} | {s['source']['section']}" for s in q["steps"]
         }),
     }
+
+
+def _run_calculator(args):
+    """Execute the tool call. Returns (payload_for_the_model, quote_dict_or_None).
+
+    Any CalculationError (impossible unit, unknown discount, both payment styles) is
+    returned to the model as an error payload rather than raised, so the model can tell
+    the salesperson what is wrong instead of the request 500-ing.
+    """
+    args = dict(args or {})
+    unit_type = args.get("unit_type")
+    block = (args.get("block") or "").strip().upper() or None
+    corner = bool(args.get("corner", False))
+
+    if not unit_type:
+        return {"error": "unit_type is required."}, None
+
+    if block is None:
+        block = _infer_block(unit_type)
+        if block is None:
+            return {
+                "error": (
+                    f"A {unit_type} is sold in both Block A and Block B at different "
+                    "prices. Ask the customer which block before quoting."
+                )
+            }, None
+
+    # Everything except the unit type and the corner flag is shared between the two
+    # readings of an ambiguous "2-bed corner" request.
+    common = {
+        "block": block,
+        "floor": args.get("floor"),
+        "margalla_facing": bool(args.get("margalla_facing", False)),
+        "discounts": args.get("discounts") or [],
+        "additional_parking_slots": int(args.get("additional_parking_slots") or 0),
+    }
+
+    try:
+        q = calculator.quote(unit_type=unit_type, corner=corner, **common)
+    except calculator.CalculationError as exc:
+        return {"error": str(exc)}, None
+
+    payload = _summarise(q)
+
+    # If the request is the ambiguous 2-bed corner case, price the other reading too and
+    # hand both to the model, which the prompt requires it to present side by side.
+    alternative = _ambiguous_two_bed_alternative(unit_type, block, corner)
+    if alternative:
+        alt_type, alt_corner = alternative
+        try:
+            alt_q = calculator.quote(unit_type=alt_type, corner=alt_corner, **common)
+            payload["alternative_reading"] = {
+                "why": (
+                    "'2-bed corner in Block B' has two defensible readings and the "
+                    "documents do not say which the customer means. Present BOTH totals, "
+                    "say which unit each belongs to, and ask the salesperson to confirm "
+                    "the unit with the customer."
+                ),
+                "this_quote_is_for": f"{q['unit_type']} ({q['area_sqft']:,} sq ft)",
+                "alternative_is_for": f"{alt_q['unit_type']} ({alt_q['area_sqft']:,} sq ft)",
+                "alternative": _summarise(alt_q),
+            }
+        except calculator.CalculationError:
+            # The alternative may be impossible (e.g. a Margalla-facing Studio). If so,
+            # there is no ambiguity to report - just quote the one that works.
+            pass
+
     return payload, q
 
 
@@ -327,16 +392,18 @@ def answer(question, k=5):
     user_parts.append(f"SALESPERSON'S QUESTION: {question}")
     messages = [{"role": "user", "content": "\n\n".join(user_parts)}]
 
+    # ---- call 1: the model reads the question and decides whether maths is needed ----
+    reply = llm.chat(SYSTEM_PROMPT, messages, tools=TOOLS, max_tokens=MAX_TOKENS)
+
     quote = None
-    # Up to 3 round trips: enough for retrieve -> tool call -> final answer, with one
-    # spare if the model needs a second calculation. A hard cap stops any runaway loop.
-    for _ in range(3):
-        reply = llm.chat(SYSTEM_PROMPT, messages, tools=TOOLS)
-        messages.append(reply["assistant_message"])
-
-        if not reply["tool_calls"]:
-            break
-
+    if reply["tool_calls"]:
+        # Python does the arithmetic, then we ask the model again with the computed
+        # numbers written into the prompt. We deliberately do NOT replay the tool call
+        # as conversation history - see the note in llm.chat(): Gemini requires an
+        # opaque "thought_signature" back with any replayed function call, and the
+        # OpenAI-compatible endpoint never exposes it. Two plain calls work on every
+        # provider, and the model still only ever sees numbers Python produced.
+        payloads = []
         for tc in reply["tool_calls"]:
             if tc["name"] != "calculate_price":
                 payload = {"error": f"Unknown tool {tc['name']!r}."}
@@ -346,11 +413,17 @@ def answer(question, k=5):
                     quote = q
                 if "error" in payload:
                     notes.append(f"Calculator rejected the request: {payload['error']}")
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": json.dumps(payload, default=str),
-            })
+            payloads.append({"requested": tc["arguments"], "result": payload})
+
+        user_parts.append(
+            "CALCULATION RESULTS - computed in Python from the price list, not by you. "
+            "Report these numbers exactly as they are, and pass on anything under "
+            "caveats_you_must_pass_on:\n"
+            + json.dumps(payloads, indent=2, default=str)
+        )
+        # ---- call 2: write the answer. No tools, so it cannot loop. ----
+        messages = [{"role": "user", "content": "\n\n".join(user_parts)}]
+        reply = llm.chat(SYSTEM_PROMPT, messages, max_tokens=MAX_TOKENS)
 
     parsed = _extract_json(reply["text"])
     if parsed is None:

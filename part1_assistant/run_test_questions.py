@@ -10,6 +10,7 @@ question the documents don't answer, and something the documents say is unconfir
 
 import os
 import sys
+import time
 import traceback
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -28,6 +29,12 @@ QUESTIONS = [
 ]
 
 OUTPUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_output.md")
+
+# Pause between questions. Google's free tier allows 5 requests per minute per model and
+# a pricing question costs two (parameters, then the answer), so running six questions
+# flat out trips the per-minute limit and spends the run in backoff. 13 seconds between
+# questions keeps us under it. Set MGC_QUESTION_DELAY=0 if you are on a paid key.
+QUESTION_DELAY_SECONDS = float(os.getenv("MGC_QUESTION_DELAY", "13"))
 
 
 def main():
@@ -50,6 +57,8 @@ def main():
     ]
 
     for n, question in enumerate(QUESTIONS, start=1):
+        if n > 1 and QUESTION_DELAY_SECONDS:
+            time.sleep(QUESTION_DELAY_SECONDS)
         print(f"\n{'=' * 78}\n[{n}/{len(QUESTIONS)}] {question}")
         lines += [f"## {n}. {question}", ""]
         try:

@@ -1,156 +1,200 @@
 <!doctype html>
 <!--
-  Bare HTML on purpose: the brief says "no styling points", so this is plain tags and
-  one <pre> for the calculation breakdown. Both forms POST and re-render this same
-  page, so there is no JavaScript at all.
+  One page, two forms, no JavaScript at all - both forms POST and this same template
+  re-renders with the result. The styling is one hand-written stylesheet in
+  static/style.css (the brief says no styling points, so there is no framework and no
+  build step; it is here so the page is pleasant to demo).
 -->
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MGC sales assistant</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
 </head>
 <body>
 
-<h1>MGC Developments - sales assistant</h1>
-<p><small>LLM provider: {{ provider }}</small></p>
+<header>
+  <h1>MGC Developments &mdash; sales assistant</h1>
+  <p>Aurora Heights &middot; grounded answers from the brochure, price list and booking FAQ,
+     and a conversion score for any lead</p>
+</header>
 
-<hr>
+<div class="wrap">
 
-<!-- ================= FORM 1: document assistant ================= -->
-<h2>1. Ask the documents</h2>
-<p><small>
-  Grounded in the brochure, the price list and the booking FAQ. Every answer names its
-  document and section. All arithmetic is done in Python, not by the model.
-</small></p>
+  <!-- ============ 1. DOCUMENT ASSISTANT ============ -->
+  <section>
+    <h2><span class="num">1</span> Ask the documents</h2>
+    <p class="hint">
+      Every answer names the document and section it came from. All arithmetic is done in
+      Python, not by the model. If the documents don't say, it says so.
+    </p>
 
-<form method="post" action="/ask">
-  <input type="text" name="question" size="90" value="{{ question or '' }}"
-         placeholder="e.g. What's the total for a Margalla-facing corner unit on floor 15, 2-bed Block B?">
-  <button type="submit">Ask</button>
-</form>
+    <form method="post" action="/ask">
+      <div class="ask-row">
+        <input type="text" name="question" value="{{ question or '' }}"
+               placeholder="e.g. What's the total for a Margalla-facing corner unit on floor 15, 2-bed Block B?"
+               autofocus>
+        <button type="submit">Ask</button>
+      </div>
+    </form>
 
-<p><small>Try:
-  What's the base price of a 2-bed in Block B? &middot;
-  What's the transfer fee? &middot;
-  What's the rental yield on a 1-bed? &middot;
-  Who is the anchor tenant?
-</small></p>
-
-{% if answer_error %}
-  <h3>Assistant unavailable</h3>
-  <pre>{{ answer_error }}</pre>
-  <p>Lead scoring below still works - it does not need an API key.</p>
-{% endif %}
-
-{% if answer_result %}
-  <h3>Answer</h3>
-  <p><b>Status:</b> {{ answer_result.status }}</p>
-  <p>{{ answer_result.answer }}</p>
-
-  <h4>Sources</h4>
-  {% if answer_result.sources %}
-    <ul>
-      {% for s in answer_result.sources %}
-        <li>{{ s.document }} &rarr; <i>{{ s.section }}</i></li>
+    <!-- Example questions as plain links. /ask accepts GET as well as POST so these
+         need no JavaScript. -->
+    <div class="examples">
+      {% for q in [
+        "What's the base price of a 2-bed in Block B?",
+        "What's the total for a Margalla-facing corner unit on floor 15, 2-bed Block B?",
+        "An overseas Pakistani buyer pays 50% upfront on a 3-Bed Executive - what's the price after discounts, and what's due at booking?",
+        "What's the transfer fee?",
+        "What's the rental yield on a 1-bed?",
+        "Who is the anchor tenant?"
+      ] %}
+        <a href="{{ url_for('ask', question=q) }}">{{ q if q|length < 46 else q[:43] ~ '...' }}</a>
       {% endfor %}
-    </ul>
-  {% else %}
-    <p>(none - an answer without a source is not trustworthy)</p>
-  {% endif %}
+    </div>
 
-  {% if answer_result.calculation_text %}
-    <h4>Calculation (Python, not the model)</h4>
-    <pre>{{ answer_result.calculation_text }}</pre>
-  {% endif %}
+    {% if answer_error %}
+      <div class="error">
+        <b>Assistant unavailable.</b>
+        <pre>{{ answer_error }}</pre>
+        Lead scoring on the right still works &mdash; it needs no API key.
+      </div>
+    {% endif %}
 
-  {% if answer_result.notes %}
-    <h4>Guardrail notes</h4>
-    <ul>{% for n in answer_result.notes %}<li>{{ n }}</li>{% endfor %}</ul>
-  {% endif %}
+    {% if answer_result %}
+      <h3>
+        Answer
+        <span class="badge {{ answer_result.status }}">{{ answer_result.status.replace('_',' ') }}</span>
+      </h3>
+      <p class="answer">{{ answer_result.answer }}</p>
 
-  <h4>Document sections retrieved (BM25)</h4>
-  <ul>
-    {% for h in answer_result.retrieved %}
-      <li>{{ h.document }} &rarr; <i>{{ h.section }}</i> (score {{ h.score }})</li>
-    {% endfor %}
-  </ul>
-{% endif %}
+      <h4>Sources</h4>
+      {% if answer_result.sources %}
+        <ul class="sources">
+          {% for s in answer_result.sources %}
+            <li>{{ s.document }}<br><span class="sec">{{ s.section }}</span></li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="hint">None &mdash; an answer without a source is not trustworthy, which is
+           why the status above was downgraded.</p>
+      {% endif %}
 
-<hr>
+      {% if answer_result.calculation_text %}
+        <h4>Calculation &mdash; Python, not the model</h4>
+        <pre>{{ answer_result.calculation_text }}</pre>
+      {% endif %}
 
-<!-- ================= FORM 2: lead scoring ================= -->
-<h2>2. Score a lead</h2>
-<p><small>
-  Only the features the model actually uses - all of them known the moment a lead
-  arrives. Leave a field blank if you do not know it.
-</small></p>
+      {% if answer_result.notes %}
+        <div class="notes">
+          <b>Guardrails fired:</b>
+          <ul>{% for n in answer_result.notes %}<li>{{ n }}</li>{% endfor %}</ul>
+        </div>
+      {% endif %}
 
-{% if model_error %}
-  <pre>{{ model_error }}</pre>
-{% else %}
-<form method="post" action="/score">
-  <table>
-    {% for col, choices in fields.categorical.items() %}
-      <tr>
-        <td><label for="{{ col }}">{{ col }}</label></td>
-        <td>
-          <select name="{{ col }}" id="{{ col }}">
-            <option value="">(unknown)</option>
-            {% for choice in choices %}
-              <option value="{{ choice }}"
-                {% if submitted and submitted[col] == choice %}selected{% endif %}>{{ choice }}</option>
-            {% endfor %}
-          </select>
-        </td>
-      </tr>
-    {% endfor %}
+      <h4>Sections retrieved (BM25)</h4>
+      <ul class="sources">
+        {% for h in answer_result.retrieved %}
+          <li><span class="sec">{{ h.section }}</span>
+              <span class="score">&mdash; {{ h.document }} &middot; score {{ h.score }}</span></li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
 
-    {% for col in fields.numeric %}
-      <tr>
-        <td><label for="{{ col }}">{{ col }}</label></td>
-        <td><input type="text" name="{{ col }}" id="{{ col }}"
-                   value="{{ submitted[col] if submitted and submitted[col] is not none else '' }}"></td>
-      </tr>
-    {% endfor %}
+  <!-- ============ 2. LEAD SCORING ============ -->
+  <section>
+    <h2><span class="num">2</span> Score a lead</h2>
+    <p class="hint">
+      These fields are exactly the model's features &mdash; all of them known the moment a
+      lead arrives. Leave anything you don't know blank.
+    </p>
 
-    {% for col in fields.binary %}
-      <tr>
-        <td><label for="{{ col }}">{{ col }}</label></td>
-        <td><input type="checkbox" name="{{ col }}" id="{{ col }}" value="1"
-                   {% if submitted and submitted[col] %}checked{% endif %}></td>
-      </tr>
-    {% endfor %}
-  </table>
-  <button type="submit">Score lead</button>
-</form>
-{% endif %}
+    {% if model_error %}
+      <div class="error"><pre>{{ model_error }}</pre></div>
+    {% else %}
+    <form method="post" action="/score">
+      <div class="field-grid">
+        {% for col, choices in fields.categorical.items() %}
+          <div class="field">
+            <label for="{{ col }}">{{ col.replace('_',' ') }}</label>
+            <select name="{{ col }}" id="{{ col }}">
+              <option value="">(unknown)</option>
+              {% for choice in choices %}
+                <option value="{{ choice }}"
+                  {% if submitted and submitted[col] == choice %}selected{% endif %}>{{ choice }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        {% endfor %}
 
-{% if score_error %}
-  <h3>Could not score</h3>
-  <pre>{{ score_error }}</pre>
-{% endif %}
+        {% for col in fields.numeric %}
+          <div class="field">
+            <label for="{{ col }}">{{ col.replace('_',' ') }}</label>
+            <input type="text" name="{{ col }}" id="{{ col }}"
+                   value="{{ submitted[col] if submitted and submitted[col] is not none else '' }}">
+          </div>
+        {% endfor %}
+      </div>
 
-{% if score_result %}
-  <h3>Score</h3>
-  <p><b>{{ score_result.band }}</b> - model score {{ score_result.score }},
-     higher than <b>{{ score_result.percentile }}%</b> of the leads this model was
-     trained on. Call the HIGH ones first.</p>
-  <p><small>
-    This is a ranking score, not a probability: the model is fitted with
-    class_weight='balanced', which pushes the raw numbers well above the real
-    conversion rate ({{ '%.1f' % (100 * score_result.base_rate) }}% of leads in the test
-    period converted). It orders a call list correctly - on the test set the top 100
-    scored leads produced 29 conversions against 7.9 expected from 100 random calls -
-    but it should not be read as "this buyer has an 83% chance of buying". Bands are cut
-    at the 1/3 and 2/3 points of the training-set score distribution.
-  </small></p>
-  <h4>Inputs used</h4>
-  <ul>
-    {% for k, v in score_result.inputs.items() %}
-      <li>{{ k }}: {{ v if v is not none else '(unknown - imputed)' }}</li>
-    {% endfor %}
-  </ul>
-{% endif %}
+      <div class="checks">
+        {% for col in fields.binary %}
+          <label for="{{ col }}">
+            <input type="checkbox" name="{{ col }}" id="{{ col }}" value="1"
+                   {% if submitted and submitted[col] %}checked{% endif %}>
+            {{ col.replace('_',' ') }}
+          </label>
+        {% endfor %}
+      </div>
+
+      <button type="submit">Score lead</button>
+    </form>
+    {% endif %}
+
+    {% if score_error %}
+      <div class="error"><b>Could not score.</b><pre>{{ score_error }}</pre></div>
+    {% endif %}
+
+    {% if score_result %}
+      <div class="score-card">
+        <div class="band {{ score_result.band }}">{{ score_result.band }}</div>
+        <div class="meta">
+          Model score {{ score_result.score }} &middot; higher than
+          <b>{{ score_result.percentile }}%</b> of the leads this model was trained on.
+        </div>
+        <div class="bar"><span style="width: {{ score_result.percentile }}%"></span></div>
+        <div class="meta">
+          A ranking score, not a probability: the model is fitted with
+          <code>class_weight='balanced'</code>, which pushes the raw numbers well above the
+          real conversion rate ({{ '%.1f' % (100 * score_result.base_rate) }}% of leads in the
+          test period converted). It orders a call list correctly &mdash; on the test set the
+          top 100 scored leads gave 29 conversions against 7.9 expected from 100 random calls
+          &mdash; but don't read it as "an 83% chance of buying". Bands cut at the 1/3 and 2/3
+          points of the training-set score distribution.
+        </div>
+      </div>
+
+      <h4>Inputs used</h4>
+      <table class="inputs">
+        {% for k, v in score_result.inputs.items() %}
+          <tr>
+            <td>{{ k.replace('_',' ') }}</td>
+            <td>{% if v is none %}<span class="unknown">unknown &mdash; imputed</span>
+                {% else %}{{ v }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% endif %}
+  </section>
+
+</div>
+
+<footer>
+  LLM provider: <code>{{ provider }}</code>.
+  Part 1 needs an API key in <code>.env</code>; Part 2's lead scoring does not.
+</footer>
 
 </body>
 </html>

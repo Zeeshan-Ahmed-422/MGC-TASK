@@ -1,0 +1,236 @@
+/* ---------------------------------------------------------------------------
+   Part 4 styling.
+
+   The brief says there are no styling points, so this is deliberately one small
+   hand-written stylesheet - no Bootstrap, no Tailwind, no build step, nothing to
+   install. It is here so the page is pleasant to demo, not to show off CSS.
+
+   Everything is laid out with CSS grid and custom properties, and it degrades to a
+   perfectly usable single column on a phone.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --bg: #f4f6f8;
+  --panel: #ffffff;
+  --ink: #1b2430;
+  --ink-soft: #5c6b7a;
+  --line: #dde3ea;
+  --brand: #0f5c4d;          /* MGC-ish deep green */
+  --brand-soft: #e7f2ef;
+  --accent: #b4802a;         /* muted gold, for the money numbers */
+  --high: #0f7b43;
+  --medium: #a8720c;
+  --low: #8a8f98;
+  --danger: #a4262c;
+  --danger-soft: #fdf2f2;
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 0 4rem;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.55 "Segoe UI", system-ui, -apple-system, Helvetica, Arial, sans-serif;
+}
+
+/* ---- header ---- */
+header {
+  background: var(--brand);
+  color: #fff;
+  padding: 1.4rem 1.5rem;
+}
+header h1 { margin: 0; font-size: 1.35rem; letter-spacing: .2px; }
+header p { margin: .35rem 0 0; opacity: .85; font-size: .85rem; }
+
+.wrap {
+  max-width: 1150px;
+  margin: 1.5rem auto;
+  padding: 0 1.25rem;
+  display: grid;
+  gap: 1.5rem;
+  /* Two columns on a wide screen, one on a narrow one. minmax(0,...) stops a long
+     <pre> block from forcing the column wider than the viewport. */
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  align-items: start;
+}
+
+/* ---- panels ---- */
+section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.35rem 1.5rem;
+}
+section > h2 {
+  margin: 0 0 .25rem;
+  font-size: 1.05rem;
+  color: var(--brand);
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+}
+section > h2 .num {
+  background: var(--brand-soft);
+  color: var(--brand);
+  width: 1.6rem; height: 1.6rem;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-size: .85rem;
+}
+.hint { margin: .1rem 0 1rem; color: var(--ink-soft); font-size: .84rem; }
+
+h3 { font-size: .95rem; margin: 1.4rem 0 .5rem; }
+h4 { font-size: .8rem; margin: 1.1rem 0 .35rem; text-transform: uppercase;
+     letter-spacing: .06em; color: var(--ink-soft); }
+
+/* ---- forms ---- */
+label { font-size: .82rem; color: var(--ink-soft); }
+input[type=text], select {
+  width: 100%;
+  padding: .5rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  font-size: .9rem;
+  background: #fff;
+  color: var(--ink);
+}
+input[type=text]:focus, select:focus {
+  outline: 2px solid var(--brand-soft);
+  border-color: var(--brand);
+}
+button {
+  margin-top: .9rem;
+  padding: .55rem 1.3rem;
+  background: var(--brand);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:hover { background: #0c4a3e; }
+
+.ask-row { display: flex; gap: .6rem; }
+.ask-row input { flex: 1; }
+.ask-row button { margin-top: 0; }
+
+/* The lead form: label above field, two per row where there is space. */
+.field-grid {
+  display: grid;
+  gap: .7rem 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.field-grid .field { display: flex; flex-direction: column; gap: .2rem; }
+.checks { display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; margin-top: .9rem; }
+.checks label { display: flex; align-items: center; gap: .4rem; font-size: .86rem;
+                color: var(--ink); }
+
+/* ---- example question chips ---- */
+.examples { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0 0; }
+.examples a {
+  font-size: .78rem;
+  padding: .28rem .6rem;
+  background: var(--brand-soft);
+  color: var(--brand);
+  border-radius: 999px;
+  text-decoration: none;
+}
+.examples a:hover { background: #d4e8e3; }
+
+/* ---- status badges ---- */
+.badge {
+  display: inline-block;
+  padding: .18rem .6rem;
+  border-radius: 999px;
+  font-size: .72rem;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.badge.answered        { background: #e3f4e9; color: var(--high); }
+.badge.conflict        { background: #fdf0e3; color: #a4590b; }
+.badge.not_in_documents{ background: #eceef1; color: #55606d; }
+.badge.unconfirmed     { background: #fdf4e3; color: var(--medium); }
+
+.answer {
+  margin: .7rem 0 0;
+  padding: .85rem 1rem;
+  background: #fafbfc;
+  border-left: 3px solid var(--brand);
+  border-radius: 0 6px 6px 0;
+  font-size: .95rem;
+}
+
+/* ---- sources ---- */
+ul.sources { list-style: none; margin: .3rem 0 0; padding: 0; }
+ul.sources li {
+  font-size: .84rem;
+  padding: .3rem 0 .3rem .9rem;
+  border-left: 2px solid var(--line);
+}
+ul.sources .sec { color: var(--brand); font-weight: 600; }
+ul.sources .score { color: var(--ink-soft); font-size: .78rem; }
+
+/* ---- the calculation breakdown ---- */
+pre {
+  background: #1b2430;
+  color: #e6edf3;
+  padding: .9rem 1rem;
+  border-radius: 8px;
+  font-size: .76rem;
+  line-height: 1.45;
+  overflow-x: auto;      /* long lines scroll, they never break the layout */
+  white-space: pre;
+  margin: .4rem 0 0;
+}
+
+/* ---- notes + errors ---- */
+.notes, .error {
+  font-size: .83rem;
+  padding: .7rem .9rem;
+  border-radius: 6px;
+  margin: .8rem 0 0;
+}
+.notes { background: #fdf9ec; border: 1px solid #f0e3bf; }
+.notes ul { margin: .3rem 0 0; padding-left: 1.1rem; }
+.error  { background: var(--danger-soft); border: 1px solid #f0cfd0; color: var(--danger); }
+.error pre { background: #fff; color: var(--danger); border: 1px solid #f0cfd0;
+             font-size: .74rem; }
+
+/* ---- the lead score result ---- */
+.score-card {
+  margin-top: 1rem;
+  padding: 1rem 1.1rem;
+  border-radius: 8px;
+  background: #fafbfc;
+  border: 1px solid var(--line);
+}
+.score-card .band { font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
+.score-card .band.HIGH   { color: var(--high); }
+.score-card .band.MEDIUM { color: var(--medium); }
+.score-card .band.LOW    { color: var(--low); }
+.score-card .meta { font-size: .85rem; color: var(--ink-soft); margin-top: .2rem; }
+
+/* A plain progress bar showing where this lead sits against all past leads. */
+.bar {
+  height: 8px;
+  background: var(--line);
+  border-radius: 999px;
+  margin: .8rem 0 .3rem;
+  overflow: hidden;
+}
+.bar span { display: block; height: 100%; background: var(--brand); }
+
+table.inputs { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: .3rem; }
+table.inputs td { padding: .25rem .4rem; border-bottom: 1px solid var(--line); }
+table.inputs td:first-child { color: var(--ink-soft); width: 55%; }
+table.inputs .unknown { color: var(--ink-soft); font-style: italic; }
+
+footer { max-width: 1150px; margin: 0 auto; padding: 0 1.25rem;
+         color: var(--ink-soft); font-size: .78rem; }
+footer code { background: #e9edf1; padding: .1rem .3rem; border-radius: 3px; }

@@ -24,7 +24,7 @@ import traceback
 
 import joblib
 import pandas as pd
-from flask import Flask, render_template, request
+from flask import Flask, redirect, render_template, request, url_for
 
 # Part 1's modules live in a sibling directory, not an installed package, so put that
 # directory on the import path. Simplest thing that works for a four-part task repo;
@@ -100,10 +100,19 @@ def index():
                            provider=llm.describe())
 
 
-@app.route("/ask", methods=["POST"])
+@app.route("/favicon.ico")
+def favicon():
+    """Browsers request /favicon.ico on every page load, which was filling the log with
+    404s. Redirect to the SVG in static/ instead."""
+    return redirect(url_for("static", filename="favicon.svg"))
+
+
+# GET as well as POST so the example-question links on the page work without any
+# JavaScript - they are plain <a href="/ask?question=...">.
+@app.route("/ask", methods=["GET", "POST"])
 def ask():
     """Form 1 - the document assistant."""
-    question = (request.form.get("question") or "").strip()
+    question = (request.values.get("question") or "").strip()
     result = None
     error = None
 

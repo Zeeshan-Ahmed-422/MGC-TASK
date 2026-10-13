@@ -61,6 +61,16 @@ LLM_PROVIDER=openai      MODEL=gpt-4o-mini        OPENAI_API_KEY=...
 LLM_PROVIDER=anthropic   MODEL=claude-sonnet-5-5  ANTHROPIC_API_KEY=...
 ```
 
+**If Part 1 complains about quota**, that is the Google free tier, not the code. Free keys
+get a per-model daily cap (20 requests/day on `gemini-3.5-flash` when I was building) and
+5 requests/minute, and a full six-question run costs 8-11 requests. The code tells the
+difference: a short rate limit is retried with backoff, while an exhausted *daily* quota
+fails immediately with a message naming the variable to change. If you hit it, put a
+different model in `MODEL` - the daily cap is **per model**, so switching is usually
+enough - or use an OpenAI/Anthropic key. `run_test_questions.py` also waits 13 seconds
+between questions to stay under the per-minute limit; set `MGC_QUESTION_DELAY=0` on a paid
+key to turn that off.
+
 **Parts 2 and 3 need no API key at all.** Part 4 loads and scores leads without one; only
 the question form needs it.
 
@@ -114,6 +124,32 @@ JSON answer -> deterministic guardrails.
 | `assistant.py` | The prompt, the tool definition, and the guardrails. |
 | `run_test_questions.py` | The six questions from the brief -> `test_output.md`. |
 
+### How the tool call actually works (and one provider bug worth knowing)
+
+The textbook agent loop sends the tool's result back as a `role="tool"` message and lets
+the model continue the same conversation. I built that first and Gemini rejected it:
+
+```
+400 Function call is missing a thought_signature in functionCall parts.
+```
+
+Gemini attaches an opaque signature to every function call and demands it back when you
+replay that call in the history - and the OpenAI-compatible endpoint never exposes it, so
+the replay can't be made valid. Rather than special-case one provider, the assistant makes
+**two plain calls**: the first extracts the parameters, Python computes the answer, and the
+second is a fresh call with the computed numbers written into the prompt as context. No
+tool message is ever replayed, it behaves identically on all three providers, and the model
+still only ever sees numbers Python produced. `llm.py` and `assistant.py` both carry the
+reasoning in comments.
+
+Two other things learned the hard way, both now handled: `MODEL` must be a model your key
+can actually use (Google retired `gemini-2.5-flash` for new keys mid-build, and
+`gemini-3.8-flash` / `gemini-flash-latest` were returning 503 "high demand" while
+`gemini-3.5-flash` was fine), and the free tier throws transient 503s often enough that
+one unlucky question would fail a six-question run - so `llm.py` retries transient errors
+(429/5xx) with exponential backoff and logs each retry, and caps every request at 90
+seconds so a hung call cannot block the run.
+
 ### Where the maths happens, and why
 
 In `calculator.py`, never in the model. The model's only job on a pricing question is to
@@ -152,12 +188,19 @@ than hidden:
 1. **"10% at booking" - 10% of what?** The payment plan table gives shares but never says
    of which figure. I apply them to the price *after* discounts, because that is what the
    buyer actually pays. The caveat shows what the token would be under the other reading.
-2. **"2-bed corner" is ambiguous.** Block B sells a distinct `2-Bed Corner` unit type
-   (1,310 sq ft, base 26,855,000) *and* there is a separate +3% corner premium. For the
-   test question I follow the price list's own worked example: a 2-Bed Standard
-   (1,150 sq ft) plus +3%. The caveat points out the other SKU exists. If you ask for a
-   `2-Bed Corner` by name, the +3% is *not* added again - that would charge for the
-   corner twice.
+2. **"2-bed corner" is ambiguous, so the assistant answers twice.** Block B sells a
+   distinct `2-Bed Corner` unit type (1,310 sq ft, base 26,855,000) *and* the price list
+   has a separate +3% corner premium whose own worked example is a corner 2-bed on floor
+   15. So "a Margalla-facing corner 2-bed on floor 15 in Block B" can mean:
+   - a **2-Bed Standard** (1,150 sq ft) plus +4% +3% +6% = +13% -> **PKR 25,340,250**, or
+   - the larger **2-Bed Corner** (1,310 sq ft) plus +4% +6% = +10% -> **PKR 29,540,500**.
+
+   These are different units at different prices and the documents do not say which the
+   customer means, so the calculator prices **both** and the prompt requires the model to
+   show both and ask the salesperson to confirm the unit. Same philosophy as the transfer
+   fee: where the documents don't settle it, don't pick. And if you name a `2-Bed Corner`
+   explicitly, the +3% premium is *not* added on top - that would charge for the corner
+   twice.
 3. **The 50%-upfront buyer has no published schedule.** The documents publish only the
    4-year standard plan. The answer gives the documented 10% token *and* the literal 50%
    figure, and says the documents do not settle it.
@@ -370,8 +413,14 @@ calibrated probabilities. That is why the web page shows a band and a percentile
 
 ## Part 4 - the web page
 
-`python part4_web/app.py`, then http://127.0.0.1:5000. One bare HTML page, no CSS, no
-JavaScript, two forms that POST and re-render.
+`python part4_web/app.py`, then http://127.0.0.1:5000. One page, two forms, **no
+JavaScript at all** - both forms POST and the same template re-renders with the result.
+
+The brief says there are no styling points, so there is no framework and no build step:
+just one hand-written stylesheet (`part4_web/static/style.css`, ~200 lines of CSS grid and
+custom properties) so the page is pleasant to demo rather than painful to look at. It
+collapses to a single column on a phone. If you would rather see it truly bare, delete the
+`<link rel="stylesheet">` line in `templates/index.html` - nothing else depends on it.
 
 - **Form 1** asks the document assistant and shows the answer, the status, the sources
   (document + section), the Python calculation breakdown when the calculator was used,
@@ -379,9 +428,14 @@ JavaScript, two forms that POST and re-render.
 - **Form 2** scores a lead. The fields *are* the model's features, and the dropdown
   choices are read out of `model.pkl`, so the page cannot offer a category the model has
   never seen. Blank means "unknown" and is imputed by the pipeline. Output is a
-  HIGH/MEDIUM/LOW band plus a percentile.
+  HIGH/MEDIUM/LOW band plus a percentile bar.
+- The six questions from the brief are one-click links under form 1 (`/ask` accepts GET as
+  well as POST, which is how they work without JavaScript).
 - **No API key?** The page still loads, form 1 shows exactly which variable to set, and
   form 2 keeps working.
+- One note if you edit a template while the server is running: `debug=False`, so Flask
+  does not reload templates - restart it. (`debug=True` would reload, but it also imports
+  the module twice and reloads the model and BM25 index with it.)
 
 ---
 
@@ -439,5 +493,9 @@ invite. How it was actually used:
   contradicts - 85 leads paid a token and still did not convert. I checked it against the
   CSV and corrected it. That is the general lesson: it is fast and good at structure, and
   every factual claim it makes about *your data* needs checking against the data.
+- It also wrote the textbook agent loop for the tool call, which Gemini rejected outright
+  (the `thought_signature` error above), and defaulted to a model name Google had already
+  retired for new keys. Both only showed up by actually running the thing against a real
+  key - which is the argument for running your code rather than reading it.
 - The genuinely useful part was the volume of explanatory comments and the reasoning in
   this README, which would have taken me far longer to write out by hand than the code did.
