@@ -1,21 +1,28 @@
 """
-Part 4 - one page that ties Part 1 and Part 3 together.
+Part 4 - the web interface: two pages, one per module.
 
 Usage (from the repo root):
     python part4_web/app.py          then open http://127.0.0.1:5000
 
-Two forms on one page:
-  * ask the document assistant a question -> answer, status, sources, and the
-    calculation breakdown when the calculator was used;
-  * enter a lead's details -> conversion probability and a high/medium/low band.
+  /assistant   page 1 - ask the document assistant (needs an API key)
+  /leads       page 2 - score a lead (needs no API key)
+  /            redirects to page 1
 
-The dropdowns in the second form are built from the values the model was actually
-trained on (they are saved inside model.pkl), so the page cannot offer a category the
-model has never seen.
+WHY TWO PAGES RATHER THAN ONE
+They are independent tools used by different people at different moments. On one page,
+asking a question re-rendered everything and wiped whatever the other module had on
+screen. Separate pages mean a salesperson can keep the lead-scoring form open in one tab
+and look a price up in another, and the server is threaded, so a slow question on page 1
+does not block page 2 at all.
 
-GRACEFUL DEGRADATION, which the brief asks for explicitly: if there is no API key, the
-page still loads and the lead-scoring form still works. Only the question form shows an
-error, and it says exactly which variable to set.
+Page 1 submits with GET so every answer has its own URL: it can be bookmarked, shared or
+reloaded, the back button works, and the example questions are ordinary links with no
+JavaScript anywhere. Page 2 submits with POST, because a lead's details are not something
+to leave sitting in a URL or a browser history.
+
+GRACEFUL DEGRADATION, which the brief asks for explicitly: with no API key, both pages
+still load, page 1 shows exactly which variable to set and links to page 2, and page 2
+keeps working normally.
 """
 
 import os
@@ -37,11 +44,22 @@ import llm        # noqa: E402
 
 MODEL_PATH = os.path.join(_HERE, "..", "part3_ml", "model.pkl")
 
+# The six questions from the brief, offered as one-click links on page 1.
+EXAMPLE_QUESTIONS = [
+    "What's the base price of a 2-bed in Block B?",
+    "What's the total for a Margalla-facing corner unit on floor 15, 2-bed Block B?",
+    "An overseas Pakistani buyer pays 50% upfront on a 3-Bed Executive - what's the "
+    "price after discounts, and what's due at booking?",
+    "What's the transfer fee?",
+    "What's the rental yield on a 1-bed?",
+    "Who is the anchor tenant?",
+]
+
 app = Flask(__name__)
 
 # ---------------------------------------------------------------------------
 # Load the trained model once at start-up. If it is missing we keep serving the
-# page and tell the user to run train.py, rather than refusing to boot.
+# pages and tell the user to run train.py, rather than refusing to boot.
 # ---------------------------------------------------------------------------
 BUNDLE = None
 MODEL_ERROR = None
@@ -94,10 +112,10 @@ def form_fields():
     }
 
 
-@app.route("/", methods=["GET"])
+@app.route("/")
 def index():
-    return render_template("index.html", fields=form_fields(), model_error=MODEL_ERROR,
-                           provider=llm.describe())
+    """No content of its own - page 1 is the front door."""
+    return redirect(url_for("assistant_page"))
 
 
 @app.route("/favicon.ico")
@@ -107,40 +125,40 @@ def favicon():
     return redirect(url_for("static", filename="favicon.svg"))
 
 
-# GET as well as POST so the example-question links on the page work without any
-# JavaScript - they are plain <a href="/ask?question=...">.
-@app.route("/ask", methods=["GET", "POST"])
-def ask():
-    """Form 1 - the document assistant."""
-    question = (request.values.get("question") or "").strip()
+@app.route("/assistant")
+def assistant_page():
+    """Page 1 - the document assistant. GET only: the question is in the URL."""
+    question = (request.args.get("question") or "").strip()
     result = None
     error = None
 
-    if not question:
-        error = "Please type a question."
-    else:
+    if question:
         try:
             result = assistant.answer(question)
         except llm.MissingAPIKey as exc:
-            # The whole point of catching this separately: no key is a configuration
-            # problem with a clear fix, not a crash.
+            # Caught separately on purpose: no key is a configuration problem with a
+            # clear fix, not a crash.
             error = str(exc)
         except llm.LLMError as exc:
             error = str(exc)
         except Exception:
             error = "Unexpected error:\n" + traceback.format_exc()
 
-    return render_template("index.html", fields=form_fields(), model_error=MODEL_ERROR,
-                           provider=llm.describe(), question=question,
+    return render_template("assistant.html", active="assistant", provider=llm.describe(),
+                           examples=EXAMPLE_QUESTIONS, question=question,
                            answer_result=result, answer_error=error)
 
 
-@app.route("/score", methods=["POST"])
-def score():
-    """Form 2 - lead scoring. Works with or without an API key."""
+@app.route("/leads", methods=["GET", "POST"])
+def leads_page():
+    """Page 2 - lead scoring. Works with or without an API key."""
     if BUNDLE is None:
-        return render_template("index.html", fields=form_fields(), model_error=MODEL_ERROR,
-                               provider=llm.describe(), score_error=MODEL_ERROR)
+        return render_template("leads.html", active="leads", provider=llm.describe(),
+                               fields=form_fields(), model_error=MODEL_ERROR)
+
+    if request.method == "GET":
+        return render_template("leads.html", active="leads", provider=llm.describe(),
+                               fields=form_fields(), model_error=None)
 
     binary = BUNDLE["binary_features"]
     row = {}
@@ -188,9 +206,9 @@ def score():
         except Exception:
             error = "Scoring failed:\n" + traceback.format_exc()
 
-    return render_template("index.html", fields=form_fields(), model_error=MODEL_ERROR,
-                           provider=llm.describe(), score_result=result, score_error=error,
-                           submitted=row)
+    return render_template("leads.html", active="leads", provider=llm.describe(),
+                           fields=form_fields(), model_error=None,
+                           score_result=result, score_error=error, submitted=row)
 
 
 if __name__ == "__main__":
@@ -199,9 +217,14 @@ if __name__ == "__main__":
         llm.api_key()
     except llm.MissingAPIKey as exc:
         print(f"NOTE: {exc}")
-        print("      The page will still load and lead scoring will still work.")
+        print("      Both pages still load and lead scoring still works.")
     if MODEL_ERROR:
         print(f"NOTE: {MODEL_ERROR}")
-    # debug=False on purpose: the reloader would import this module twice and reload the
-    # model and the BM25 index with it.
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    print("\n  page 1: http://127.0.0.1:5000/assistant   (ask the documents)")
+    print("  page 2: http://127.0.0.1:5000/leads       (score a lead)\n")
+    # threaded=True so a slow question on page 1 does not block page 2 - the two modules
+    # are genuinely usable at the same time, in two tabs. (Flask's default is already
+    # threaded; it is passed explicitly because the behaviour is the point.)
+    # debug=False: the reloader would import this module twice and reload the model and
+    # the BM25 index with it.
+    app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)

@@ -124,6 +124,27 @@ JSON answer -> deterministic guardrails.
 | `assistant.py` | The prompt, the tool definition, and the guardrails. |
 | `run_test_questions.py` | The six questions from the brief -> `test_output.md`. |
 
+### One model call per question (why it is as fast as it is)
+
+A pricing question used to cost **two** sequential API calls: one for the model to extract
+the parameters, a second for it to write the sentence around the numbers Python had
+computed. That doubled the wait on exactly the questions people ask most, and the second
+call was also where things went wrong - it dropped the figures, invented extra totals, and
+mis-attributed values.
+
+So Python now writes the pricing answer too (`calculator.summarise_quote()`). The model
+does the one thing it is genuinely good at - turning "Margalla-facing corner on floor 15,
+2-bed Block B" into parameters - and everything after that is deterministic. **Every
+question now costs exactly one model call**, and the figures cannot be mangled between the
+calculator and the screen. The page shows the elapsed time and the call count so you can
+see it.
+
+What is left is the provider's own latency: about 5 seconds a question on Google's free
+tier, occasionally much worse when it is busy. The code does what it can about the spikes -
+every request times out at 40 seconds and is retried rather than waited on (the free tier
+sometimes takes 80 seconds for a call that normally takes 5), with short backoff. Raise it
+with `MGC_LLM_TIMEOUT` if your key is slower; a paid key is the real fix.
+
 ### How the tool call actually works (and one provider bug worth knowing)
 
 The textbook agent loop sends the tool's result back as a `role="tool"` message and lets
@@ -249,6 +270,12 @@ than hidden:
   - **If the answer says something is not confirmed, the status is re-labelled
     `unconfirmed`** - for "who is the anchor tenant?" the model wrote the right sentence
     ("no anchor tenant has been confirmed") and still labelled it `answered`.
+  - **If the answer is a refusal, the status is re-labelled `not_in_documents`** - the
+    rental-yield answer came back word-perfect ("MGC does not publish rental yield
+    projections... direct enquiries to the marketing manager") and labelled `answered`.
+    The patterns are deliberately narrow, because "confirm with the marketing manager"
+    also appears in pricing caveats and in the conflict answer, and neither of those is a
+    refusal.
   - **If the calculator ran, its figures must appear in the answer.** The model once
     replied "refer to the calculated breakdown for the exact figures", which is useless to
     someone mid-quote, so Python checks its own numbers are present (digits only, so
@@ -431,28 +458,42 @@ calibrated probabilities. That is why the web page shows a band and a percentile
 
 ---
 
-## Part 4 - the web page
+## Part 4 - the web interface
 
-`python part4_web/app.py`, then http://127.0.0.1:5000. One page, two forms, **no
-JavaScript at all** - both forms POST and the same template re-renders with the result.
+`python part4_web/app.py`, then:
+
+- **http://127.0.0.1:5000/assistant** - page 1, ask the documents
+- **http://127.0.0.1:5000/leads** - page 2, score a lead
+
+(`/` redirects to page 1, and there is a nav link between them.) **No JavaScript at all**:
+page 1 submits with GET so every answer has its own shareable, reloadable URL and the
+example questions are ordinary links; page 2 submits with POST, because a lead's details
+should not sit in a URL or a browser history.
+
+**One module per page, and the server is threaded**, so the two tools are genuinely
+independent: open them in two tabs and a slow question on page 1 does not block page 2 at
+all. I measured it - page 2 answered in 0.05s while page 1 was still waiting on the model.
+On one page, asking a question also re-rendered and wiped whatever the other module had on
+screen, which is the other reason to split them.
 
 The brief says there are no styling points, so there is no framework and no build step:
 just one hand-written stylesheet (`part4_web/static/style.css`, ~200 lines of CSS grid and
 custom properties) so the page is pleasant to demo rather than painful to look at. It
 collapses to a single column on a phone. If you would rather see it truly bare, delete the
-`<link rel="stylesheet">` line in `templates/index.html` - nothing else depends on it.
+`<link rel="stylesheet">` line in `templates/base.html` - nothing else depends on it.
 
-- **Form 1** asks the document assistant and shows the answer, the status, the sources
-  (document + section), the Python calculation breakdown when the calculator was used,
-  any guardrail notes, and which document sections BM25 retrieved.
-- **Form 2** scores a lead. The fields *are* the model's features, and the dropdown
-  choices are read out of `model.pkl`, so the page cannot offer a category the model has
-  never seen. Blank means "unknown" and is imputed by the pipeline. Output is a
+- **Page 1 (`/assistant`)** shows the answer, the status badge, the sources (document +
+  section), the Python calculation breakdown when the calculator ran, any guardrail notes,
+  which sections BM25 retrieved, and how long it took in model calls and seconds. The six
+  questions from the brief are one-click links.
+- **Page 2 (`/leads`)** scores a lead. The fields *are* the model's features, and the
+  dropdown choices are read out of `model.pkl`, so the page cannot offer a category the
+  model has never seen. Blank means "unknown" and is imputed by the pipeline. Output is a
   HIGH/MEDIUM/LOW band plus a percentile bar.
-- The six questions from the brief are one-click links under form 1 (`/ask` accepts GET as
-  well as POST, which is how they work without JavaScript).
-- **No API key?** The page still loads, form 1 shows exactly which variable to set, and
-  form 2 keeps working.
+- Templates: `base.html` holds the layout and nav, `assistant.html` and `leads.html` fill
+  in the content block.
+- **No API key?** Both pages still load, page 1 shows exactly which variable to set and
+  links to page 2, and page 2 keeps working.
 - One note if you edit a template while the server is running: `debug=False`, so Flask
   does not reload templates - restart it. (`debug=True` would reload, but it also imports
   the module twice and reloads the model and BM25 index with it.)

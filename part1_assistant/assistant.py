@@ -28,6 +28,7 @@ Three design choices worth defending:
 
 import json
 import re
+import time
 
 import calculator
 import llm
@@ -379,7 +380,17 @@ def _quote_numbers(q):
         numbers.add(q["upfront_50_percent"])
     if q["area_sqft"]:
         numbers.add(q["area_sqft"])
-    return {int(round(n)) for n in numbers if n}
+    allowed = {int(round(n)) for n in numbers if n}
+
+    # The caveats and the step details also quote figures - the token under the other
+    # reading of the payment plan, the 2-Bed Corner's base price, the 50%-upfront amount.
+    # Python produced all of them, so they are legitimate in an answer and must not be
+    # reported as invented. Harvest them from the text rather than listing them by hand,
+    # so a new caveat cannot silently start failing the check.
+    text = " ".join(q["caveats"]) + " " + " ".join(s["detail"] for s in q["steps"])
+    for raw in re.findall(r"\d[\d,]{4,}(?:\.\d+)?", text):
+        allowed.add(int(float(raw.replace(",", ""))))
+    return allowed
 
 
 def _unverified_numbers(answer, allowed):
@@ -423,6 +434,29 @@ def _asserts_unconfirmed(answer):
     """True if the answer itself says the thing is not confirmed yet."""
     text = (answer or "").lower()
     return any(re.search(p, text) for p in _UNCONFIRMED_PATTERNS)
+
+
+# Phrases that mean "the documents do not carry this". Same idea as the unconfirmed
+# patterns: the rental-yield answer was word-perfect ("MGC does not publish rental yield
+# projections... direct enquiries to the marketing manager") and labelled "answered".
+# Deliberately specific - "confirm with the marketing manager" appears in pricing caveats
+# and in the conflict answer, and those are not refusals.
+_NOT_IN_DOCUMENTS_PATTERNS = (
+    r"\b(does|do) not publish\b",
+    r"\b(is|are) not published\b",
+    r"\bmust not (give|quote|provide)\b",
+    r"\b(are|is) (strictly )?prohibited from (giving|providing|quoting)\b",
+    r"\bdirect (such|all|these|related|this)\b[^.]{0,40}\b(to the|to a) marketing manager\b",
+    r"\bi (do not|don't) have\b",
+    r"\bnot in the documents\b",
+    r"\bdocuments (do not|don't) (contain|cover|mention|say)\b",
+)
+
+
+def _asserts_not_in_documents(answer):
+    """True if the answer itself says this information is not in the documents."""
+    text = (answer or "").lower()
+    return any(re.search(p, text) for p in _NOT_IN_DOCUMENTS_PATTERNS)
 
 
 def _missing_figures(answer, question, quote):
@@ -496,6 +530,7 @@ def answer(question, k=5):
     Raises llm.MissingAPIKey / llm.LLMError if the provider cannot be reached - Part 4
     catches those and shows the error while the lead-scoring form keeps working.
     """
+    started = time.monotonic()
     retriever = get_retriever()
     context, hits = retriever.as_context(question, k=k)
     notes = []
@@ -519,8 +554,17 @@ def answer(question, k=5):
     user_parts.append(f"SALESPERSON'S QUESTION: {question}")
     messages = [{"role": "user", "content": "\n\n".join(user_parts)}]
 
-    # ---- call 1: the model reads the question and decides whether maths is needed ----
-    reply = llm.chat(SYSTEM_PROMPT, messages, tools=TOOLS, max_tokens=MAX_TOKENS)
+    # How many provider calls this question costs. A list, not an int, so the nested
+    # helper below can update it; and local, not global, because the Flask server is
+    # threaded and two salespeople can ask at once.
+    api_calls = [0]
+
+    def ask_model(**kwargs):
+        api_calls[0] += 1
+        return llm.chat(SYSTEM_PROMPT, messages, max_tokens=MAX_TOKENS, **kwargs)
+
+    # ---- the only model call for most questions ----
+    reply = ask_model(tools=TOOLS)
 
     # The prompt forbids the model from doing arithmetic, but a prompt is a request, not a
     # guarantee: a smaller model answered the overseas-buyer question with its own
@@ -531,43 +575,49 @@ def answer(question, k=5):
     if calculation_required and not reply["tool_calls"]:
         notes.append("The model tried to answer a pricing question without the "
                      "calculator; retried with the tool forced.")
-        reply = llm.chat(SYSTEM_PROMPT, messages, tools=TOOLS, max_tokens=MAX_TOKENS,
-                         force_tool="calculate_price")
+        reply = ask_model(tools=TOOLS, force_tool="calculate_price")
 
     quote = None
     quotes = []  # primary + any alternative reading, for verifying the answer's numbers
     if reply["tool_calls"]:
-        # Python does the arithmetic, then we ask the model again with the computed
-        # numbers written into the prompt. We deliberately do NOT replay the tool call
-        # as conversation history - see the note in llm.chat(): Gemini requires an
-        # opaque "thought_signature" back with any replayed function call, and the
-        # OpenAI-compatible endpoint never exposes it. Two plain calls work on every
-        # provider, and the model still only ever sees numbers Python produced.
-        payloads = []
+        # Python does the arithmetic AND writes the answer - see
+        # calculator.summarise_quote(). That is the whole of step 2: no second API call,
+        # so a pricing question is as fast as any other question, and the figures cannot
+        # be dropped, inflated or mis-attributed between the calculator and the screen.
+        errors = []
         for tc in reply["tool_calls"]:
             if tc["name"] != "calculate_price":
-                payload = {"error": f"Unknown tool {tc['name']!r}."}
-            else:
-                payload, computed = _run_calculator(tc["arguments"])
-                if computed:
-                    # computed is [primary] or [primary, alternative reading]. The first
-                    # is what the web page shows; both count as legitimate figures when
-                    # we check the numbers in the answer.
-                    quote = computed[0]
-                    quotes.extend(computed)
-                if "error" in payload:
-                    notes.append(f"Calculator rejected the request: {payload['error']}")
-            payloads.append({"requested": tc["arguments"], "result": payload})
+                errors.append(f"Unknown tool {tc['name']!r}.")
+                continue
+            payload, computed = _run_calculator(tc["arguments"])
+            if computed:
+                # computed is [primary] or [primary, alternative reading].
+                quote = computed[0]
+                quotes.extend(computed)
+            if "error" in payload:
+                errors.append(payload["error"])
+                notes.append(f"Calculator rejected the request: {payload['error']}")
 
-        user_parts.append(
-            "CALCULATION RESULTS - computed in Python from the price list, not by you. "
-            "Report these numbers exactly as they are, and pass on anything under "
-            "caveats_you_must_pass_on:\n"
-            + json.dumps(payloads, indent=2, default=str)
-        )
-        # ---- call 2: write the answer. No tools, so it cannot loop. ----
-        messages = [{"role": "user", "content": "\n\n".join(user_parts)}]
-        reply = llm.chat(SYSTEM_PROMPT, messages, max_tokens=MAX_TOKENS)
+        if quote is not None:
+            alternative = quotes[1] if len(quotes) > 1 else None
+            result = {
+                "answer": calculator.summarise_quote(quote, alternative),
+                "status": "answered",
+                "sources": calculator.quote_sources(quote),
+            }
+            notes.append("Answer written by calculator.py from the price list, not by the "
+                         "model - the model only extracted the parameters "
+                         f"({json.dumps(reply['tool_calls'][0]['arguments'], default=str)}).")
+        else:
+            # The calculator refused (an impossible unit, both payment styles, an
+            # ambiguous block). Report its reason rather than inventing a price.
+            result = {
+                "answer": "I can't price that as asked. " + " ".join(errors),
+                "status": "unconfirmed",
+                "sources": [],
+            }
+        return _finish(question, result, quote, quotes, hits, notes, conflict,
+                       calculation_required, started, api_calls[0])
 
     parsed = _extract_json(reply["text"])
     if parsed is None:
@@ -586,6 +636,17 @@ def answer(question, k=5):
             "sources": _normalise_sources(parsed.get("sources")),
         }
 
+    return _finish(question, result, quote, quotes, hits, notes, conflict,
+                   calculation_required, started, api_calls[0])
+
+
+def _finish(question, result, quote, quotes, hits, notes, conflict,
+            calculation_required, started, api_calls):
+    """Apply every deterministic guardrail and build the result dict.
+
+    Shared by both paths - the Python-written pricing answer and the
+    model-written prose answer - so neither can skip a check.
+    """
     # ---- deterministic guardrails: do not trust the model to have obeyed ----------
 
     # Replace any leaked context numbering ("document [2]") with the real document name.
@@ -632,6 +693,17 @@ def answer(question, k=5):
         notes.append("Re-labelled as unconfirmed: the answer itself says this is not "
                      "confirmed in the documents.")
         result["status"] = "unconfirmed"
+
+    # Same again for a refusal. "What's the rental yield?" came back word-perfect - "MGC
+    # does not publish rental yield projections... direct enquiries to the marketing
+    # manager" - and labelled "answered". Checked after the unconfirmed test so that
+    # "applied for, no confirmed timeline" stays unconfirmed, and only when no price was
+    # computed, since a real quote mentioning the marketing manager is not a refusal.
+    if (result["status"] == "answered" and quote is None
+            and _asserts_not_in_documents(result["answer"])):
+        notes.append("Re-labelled as not_in_documents: the answer itself says the "
+                     "documents do not carry this.")
+        result["status"] = "not_in_documents"
 
     # A pricing question that never reached the calculator cannot be answered safely: any
     # figure in the reply was computed by the model. Throw it away rather than quote it.
@@ -693,6 +765,10 @@ def answer(question, k=5):
         ],
         "provider": llm.describe(),
         "notes": notes,
+        # Shown on the web page. A pricing question used to cost two sequential API
+        # calls; now it is one, so it is no slower than any other question.
+        "elapsed_seconds": round(time.monotonic() - started, 1),
+        "llm_calls": api_calls,
     }
 
 

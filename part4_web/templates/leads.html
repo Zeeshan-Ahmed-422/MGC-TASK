@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Score a lead - MGC{% endblock %}
+
+{% block content %}
+<section>
+  <h2><span class="num">2</span> Score a lead</h2>
+  <p class="hint">
+    These fields are exactly the model's features &mdash; all of them known the moment a
+    lead arrives. Leave anything you don't know blank; the pipeline imputes it. No API key
+    needed on this page.
+  </p>
+
+  {% if model_error %}
+    <div class="error"><pre>{{ model_error }}</pre></div>
+  {% else %}
+  <form method="post" action="{{ url_for('leads_page') }}">
+    <div class="field-grid">
+      {% for col, choices in fields.categorical.items() %}
+        <div class="field">
+          <label for="{{ col }}">{{ col.replace('_',' ') }}</label>
+          <select name="{{ col }}" id="{{ col }}">
+            <option value="">(unknown)</option>
+            {% for choice in choices %}
+              <option value="{{ choice }}"
+                {% if submitted and submitted[col] == choice %}selected{% endif %}>{{ choice }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      {% endfor %}
+
+      {% for col in fields.numeric %}
+        <div class="field">
+          <label for="{{ col }}">{{ col.replace('_',' ') }}</label>
+          <input type="text" name="{{ col }}" id="{{ col }}"
+                 value="{{ submitted[col] if submitted and submitted[col] is not none else '' }}">
+        </div>
+      {% endfor %}
+    </div>
+
+    <div class="checks">
+      {% for col in fields.binary %}
+        <label for="{{ col }}">
+          <input type="checkbox" name="{{ col }}" id="{{ col }}" value="1"
+                 {% if submitted and submitted[col] %}checked{% endif %}>
+          {{ col.replace('_',' ') }}
+        </label>
+      {% endfor %}
+    </div>
+
+    <button type="submit">Score lead</button>
+  </form>
+  {% endif %}
+
+  {% if score_error %}
+    <div class="error"><b>Could not score.</b><pre>{{ score_error }}</pre></div>
+  {% endif %}
+
+  {% if score_result %}
+    <div class="score-card">
+      <div class="band {{ score_result.band }}">{{ score_result.band }}</div>
+      <div class="meta">
+        Model score {{ score_result.score }} &middot; higher than
+        <b>{{ score_result.percentile }}%</b> of the leads this model was trained on.
+        Call the HIGH ones first.
+      </div>
+      <div class="bar"><span style="width: {{ score_result.percentile }}%"></span></div>
+      <div class="meta">
+        A ranking score, not a probability: the model is fitted with
+        <code>class_weight='balanced'</code>, which pushes the raw numbers well above the
+        real conversion rate ({{ '%.1f' % (100 * score_result.base_rate) }}% of leads in the
+        test period converted). It orders a call list correctly &mdash; on the test set the
+        top 100 scored leads gave 29 conversions against 7.9 expected from 100 random calls
+        &mdash; but don't read it as "an 83% chance of buying". Bands cut at the 1/3 and 2/3
+        points of the training-set score distribution.
+      </div>
+    </div>
+
+    <h4>Inputs used</h4>
+    <table class="inputs">
+      {% for k, v in score_result.inputs.items() %}
+        <tr>
+          <td>{{ k.replace('_',' ') }}</td>
+          <td>{% if v is none %}<span class="unknown">unknown &mdash; imputed</span>
+              {% else %}{{ v }}{% endif %}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+</section>
+{% endblock %}

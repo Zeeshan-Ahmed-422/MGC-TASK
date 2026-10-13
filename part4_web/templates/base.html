@@ -1,0 +1,46 @@
+<!doctype html>
+<!--
+  Shared layout for the two module pages. Jinja template inheritance: each page fills in
+  the `content` block, and the header, nav and footer live here once.
+
+  The two modules are separate pages on purpose - they are independent tools. A
+  salesperson can keep the lead list open in one tab and look a price up in another, and
+  asking a question no longer wipes out whatever was on screen for the other module.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}MGC sales assistant{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
+</head>
+<body>
+
+<header>
+  <h1>MGC Developments &mdash; sales assistant</h1>
+  <p>Aurora Heights &middot; grounded answers from the brochure, price list and booking FAQ,
+     and a conversion score for any lead</p>
+  <nav>
+    <!-- `active` is set by each page so the current tab is obvious. -->
+    <a href="{{ url_for('assistant_page') }}" class="{{ 'active' if active == 'assistant' }}">
+      1 &middot; Ask the documents
+    </a>
+    <a href="{{ url_for('leads_page') }}" class="{{ 'active' if active == 'leads' }}">
+      2 &middot; Score a lead
+    </a>
+  </nav>
+</header>
+
+<div class="wrap single">
+  {% block content %}{% endblock %}
+</div>
+
+<footer>
+  LLM provider: <code>{{ provider }}</code>.
+  Page 1 needs an API key in <code>.env</code>; page 2's lead scoring does not.
+  The two pages are independent &mdash; open them in separate tabs and both work at once.
+</footer>
+
+</body>
+</html>

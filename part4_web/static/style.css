@@ -234,3 +234,24 @@ table.inputs .unknown { color: var(--ink-soft); font-style: italic; }
 footer { max-width: 1150px; margin: 0 auto; padding: 0 1.25rem;
          color: var(--ink-soft); font-size: .78rem; }
 footer code { background: #e9edf1; padding: .1rem .3rem; border-radius: 3px; }
+
+/* ---- nav between the two module pages ---- */
+nav { margin-top: 1rem; display: flex; gap: .5rem; flex-wrap: wrap; }
+nav a {
+  padding: .45rem .9rem;
+  border-radius: 6px 6px 0 0;
+  background: rgba(255,255,255,.15);
+  color: #fff;
+  text-decoration: none;
+  font-size: .88rem;
+  font-weight: 600;
+}
+nav a:hover { background: rgba(255,255,255,.28); }
+/* The current page's tab joins onto the panel below it. */
+nav a.active { background: var(--bg); color: var(--brand); }
+
+/* One module per page now, so the grid is a single column with a sane max width. */
+.wrap.single { grid-template-columns: minmax(0, 1fr); max-width: 900px; }
+
+/* How long the answer took, and how many model calls it cost. */
+.timing { float: right; font-size: .75rem; font-weight: 400; color: var(--ink-soft); }

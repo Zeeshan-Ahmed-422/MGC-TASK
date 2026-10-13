@@ -433,6 +433,97 @@ def transfer_fee_conflict():
     return PRICING["known_conflicts"][0]
 
 
+def summarise_quote(q, alternative=None):
+    """Write the salesperson-facing answer for a quote, in Python.
+
+    WHY THIS IS NOT DONE BY THE LLM
+    Originally the flow was: model extracts parameters -> Python computes -> model writes
+    the sentence. That is two sequential API calls, so a pricing question took twice as
+    long as any other, and the second call was the one that kept going wrong - it dropped
+    the figures ("refer to the breakdown"), invented extra totals, and mis-attributed
+    numbers. Everything the sentence needs is already in the quote, so Python writes it:
+    one API call instead of two, and the numbers cannot be mangled on the way out.
+
+    The model is still doing the job it is good at - reading "Margalla-facing corner on
+    floor 15, 2-bed Block B" and turning it into parameters.
+    """
+    cur = q["currency"]
+    bits = []
+
+    features = []
+    if q["floor"]:
+        features.append(f"floor {q['floor']}")
+    if q["corner"]:
+        features.append("corner")
+    if q["margalla_facing"]:
+        features.append("Margalla-facing")
+    unit = f"{q['unit_type']} in Block {q['block']}"
+    if q["area_sqft"]:
+        unit += f" ({q['area_sqft']:,} sq ft)"
+    if features:
+        unit += ", " + ", ".join(features)
+
+    bits.append(f"{unit}: base price {cur} {q['base_price']:,.0f}")
+
+    if q["premiums"]:
+        premium_list = ", ".join(f"{p['label']} +{p['pct']:g}%" for p in q["premiums"])
+        bits.append(
+            f"plus {q['premium_pct_total']:g}% in location premiums ({premium_list}) "
+            f"= {cur} {q['premium_amount']:,.0f}, giving a list price of "
+            f"{cur} {q['list_price']:,.0f}"
+        )
+
+    if q["discounts"]:
+        discount_list = ", ".join(f"{d['label']} -{d['pct']:g}%" for d in q["discounts"])
+        bits.append(
+            f"less {q['discount_pct_total']:g}% of base in discounts ({discount_list}) "
+            f"= {cur} {q['discount_amount']:,.0f}"
+        )
+
+    sentence = "; ".join(bits) + "."
+
+    price_label = "Price after discounts" if q["discounts"] else "Total price"
+    lines = [
+        sentence,
+        f"{price_label}: {cur} {q['net_price']:,.0f}. "
+        f"Due at booking ({q['payment_schedule'][0]['pct']:g}% token under the "
+        f"{q['payment_plan']}): {cur} {q['due_at_booking']:,.0f}.",
+    ]
+
+    if q["upfront_50_percent"]:
+        lines.append(
+            f"Taken literally, 50% upfront would be {cur} {q['upfront_50_percent']:,.0f}."
+        )
+
+    lines.append(
+        "Not included in that price: "
+        + ", ".join(f"{c['label']} {cur} {c['amount']:,.0f}" for c in q["other_charges"])
+        + f" (total {cur} {q['other_charges_total']:,.0f})."
+    )
+
+    if alternative is not None:
+        # The ambiguous 2-bed corner case: give both units rather than choosing one.
+        lines.append(
+            "IMPORTANT - the documents support two readings of this request, so here is "
+            f"the other one. {summarise_quote(alternative)}"
+        )
+
+    if q["caveats"]:
+        lines.append("Confirm before quoting a customer: " + " ".join(q["caveats"]))
+
+    return " ".join(lines)
+
+
+def quote_sources(q):
+    """The distinct document+section pairs behind a quote, for the answer's citations."""
+    seen = []
+    for step in q["steps"]:
+        src = {"document": step["source"]["document"], "section": step["source"]["section"]}
+        if src not in seen:
+            seen.append(src)
+    return seen
+
+
 def format_breakdown(q):
     """Render a quote as plain text. Used by the test runner and the CLI."""
     lines = [f"{q['unit_type']}, Block {q['block']}"

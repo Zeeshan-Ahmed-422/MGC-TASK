@@ -128,6 +128,11 @@ _TRANSIENT_MARKERS = ("429", "500", "502", "503", "504", "overloaded",
                       "high demand", "unavailable", "timeout", "timed out")
 
 
+# Seconds to wait for one provider call before giving up on it and retrying. Short on
+# purpose - see _with_retries(). Override with MGC_LLM_TIMEOUT if your key is slower.
+REQUEST_TIMEOUT = float(os.getenv("MGC_LLM_TIMEOUT", "25"))
+
+
 class QuotaExhausted(LLMError):
     """The key's quota for this model is gone for the day - retrying will not help."""
 
@@ -158,14 +163,19 @@ def _classify(exc):
     return "permanent"
 
 
-def _with_retries(call, attempts=5, first_delay=3.0):
+def _with_retries(call, attempts=4, first_delay=1.5):
     """Run `call`, retrying transient provider failures with exponential backoff.
 
     Google's free tier returns 503 "experiencing high demand" and short 429s often
     enough that one unlucky question would otherwise fail a whole six-question run, so
-    this retries five times with a growing delay (3s, 6s, 12s, 24s). A bad model name or
-    a bad key is not retried, and neither is an exhausted daily quota - both would just
-    fail five times and waste the reviewer's time.
+    this retries with a growing delay (1.5s, 3s, 6s). A bad model name or a bad key is
+    not retried, and neither is an exhausted daily quota - both would just fail four
+    times and waste the reviewer's time.
+
+    The delays are deliberately short, and REQUEST_TIMEOUT below is deliberately well
+    under a minute: the free tier occasionally takes 80 seconds to answer a call that
+    normally takes 5, and abandoning that call and asking again is far quicker than
+    waiting for it. Fail fast, retry fast.
     """
     delay = first_delay
     for attempt in range(1, attempts + 1):
@@ -229,7 +239,7 @@ def chat(system, messages, tools=None, max_tokens=2000, force_tool=None):
     if provider == "anthropic":
         import anthropic
 
-        client = anthropic.Anthropic(api_key=key)
+        client = anthropic.Anthropic(api_key=key, timeout=REQUEST_TIMEOUT, max_retries=0)
         try:
             tool_args = {}
             if tools:
@@ -260,7 +270,7 @@ def chat(system, messages, tools=None, max_tokens=2000, force_tool=None):
     # timeout: a hung request must not block the whole run. max_retries=0: the SDK's own
     # silent retries fought with _with_retries() above, which at least logs what it is
     # doing - one retry policy is easier to reason about than two.
-    client_args = {"api_key": key, "timeout": 90.0, "max_retries": 0}
+    client_args = {"api_key": key, "timeout": REQUEST_TIMEOUT, "max_retries": 0}
     if cfg["base_url"]:
         client_args["base_url"] = cfg["base_url"]
     client = OpenAI(**client_args)

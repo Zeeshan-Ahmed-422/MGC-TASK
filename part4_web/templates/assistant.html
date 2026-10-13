@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Ask the documents - MGC{% endblock %}
+
+{% block content %}
+<section>
+  <h2><span class="num">1</span> Ask the documents</h2>
+  <p class="hint">
+    Grounded in the brochure, the price list and the booking FAQ. Every answer names its
+    document and section. All arithmetic is done in Python, never by the model &mdash; and
+    if the documents don't say, neither does this.
+  </p>
+
+  <!-- GET, not POST, so an answer has its own shareable URL and the back button works. -->
+  <form method="get" action="{{ url_for('assistant_page') }}">
+    <div class="ask-row">
+      <input type="text" name="question" value="{{ question or '' }}"
+             placeholder="e.g. What's the total for a Margalla-facing corner unit on floor 15, 2-bed Block B?"
+             autofocus>
+      <button type="submit">Ask</button>
+    </div>
+  </form>
+
+  <div class="examples">
+    {% for q in examples %}
+      <a href="{{ url_for('assistant_page', question=q) }}">{{ q if q|length < 46 else q[:43] ~ '...' }}</a>
+    {% endfor %}
+  </div>
+
+  {% if answer_error %}
+    <div class="error">
+      <b>Assistant unavailable.</b>
+      <pre>{{ answer_error }}</pre>
+      <a href="{{ url_for('leads_page') }}">Lead scoring still works</a> &mdash; it needs no API key.
+    </div>
+  {% endif %}
+
+  {% if answer_result %}
+    <h3>
+      Answer
+      <span class="badge {{ answer_result.status }}">{{ answer_result.status.replace('_',' ') }}</span>
+      <span class="timing">{{ answer_result.elapsed_seconds }}s &middot;
+        {{ answer_result.llm_calls }} model call{{ '' if answer_result.llm_calls == 1 else 's' }}</span>
+    </h3>
+    <p class="answer">{{ answer_result.answer }}</p>
+
+    <h4>Sources</h4>
+    {% if answer_result.sources %}
+      <ul class="sources">
+        {% for s in answer_result.sources %}
+          <li>{{ s.document }}<br><span class="sec">{{ s.section }}</span></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="hint">None &mdash; an answer without a source is not trustworthy, which is
+         why the status above was downgraded.</p>
+    {% endif %}
+
+    {% if answer_result.calculation_text %}
+      <h4>Calculation &mdash; Python, not the model</h4>
+      <pre>{{ answer_result.calculation_text }}</pre>
+    {% endif %}
+
+    {% if answer_result.notes %}
+      <div class="notes">
+        <b>Guardrails fired:</b>
+        <ul>{% for n in answer_result.notes %}<li>{{ n }}</li>{% endfor %}</ul>
+      </div>
+    {% endif %}
+
+    <h4>Sections retrieved (BM25)</h4>
+    <ul class="sources">
+      {% for h in answer_result.retrieved %}
+        <li><span class="sec">{{ h.section }}</span>
+            <span class="score">&mdash; {{ h.document }} &middot; score {{ h.score }}</span></li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+</section>
+{% endblock %}

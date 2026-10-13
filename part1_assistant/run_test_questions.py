@@ -48,11 +48,15 @@ def main():
     lines = [
         "# Part 1 - test output",
         "",
-        f"Six questions from the brief, run through `assistant.answer()`.",
+        "Six questions from the brief, run through `assistant.answer()`.",
         f"Provider/model: `{llm.describe()}`.",
         "",
         "All arithmetic below comes from `calculator.py` (deterministic Python), not from",
-        "the model. Every answer carries the document and section it came from.",
+        "the model, and for a pricing question `calculator.summarise_quote()` writes the",
+        "answer too - so every question costs exactly **one** model call, whose only job was",
+        "to extract the parameters. Every answer carries the document and section it came",
+        "from. The timing next to each status is the whole round trip; it is almost entirely",
+        "the provider's own latency.",
         "",
     ]
 
@@ -69,14 +73,17 @@ def main():
             lines += ["**FAILED**", "", "```", traceback.format_exc(), "```", ""]
             continue
 
-        print(f"STATUS: {r['status']}")
+        print(f"STATUS: {r['status']}  ({r['elapsed_seconds']}s, "
+              f"{r['llm_calls']} model call{'' if r['llm_calls'] == 1 else 's'})")
         print(f"ANSWER: {r['answer']}")
         for s in r["sources"]:
             print(f"SOURCE: {s['document']} -> {s['section']}")
         for note in r["notes"]:
             print(f"NOTE:   {note}")
 
-        lines += [f"**Status:** `{r['status']}`", "", r["answer"] or "_(empty)_", "", "**Sources:**", ""]
+        lines += [f"**Status:** `{r['status']}` &nbsp;&middot;&nbsp; {r['elapsed_seconds']}s, "
+                  f"{r['llm_calls']} model call{'' if r['llm_calls'] == 1 else 's'}",
+                  "", r["answer"] or "_(empty)_", "", "**Sources:**", ""]
         if r["sources"]:
             for s in r["sources"]:
                 lines.append(f"- {s['document']} -> *{s['section']}*")
