@@ -529,33 +529,40 @@ collapses to a single column on a phone. If you would rather see it truly bare, 
 
 ## Deploying it
 
-The repo is ready to deploy as-is; the only thing that cannot live in it is the API key.
+The repo deploys as-is; the only thing that cannot live in it is the API key. Config for
+two platforms is committed - `railway.json` and `render.yaml` - and anything
+Heroku-shaped reads the `Procfile`.
 
-**Render** (free tier, what `render.yaml` is written for):
+**Railway** (https://railway.app):
 
-1. New → **Blueprint** → connect this repo. Render reads `render.yaml`, so the build and
-   start commands and the Python version are already set.
-2. It will ask for `GOOGLE_API_KEY` (it is marked `sync: false`, so it is never stored in
-   the repo). Paste the key from https://aistudio.google.com/apikey.
-3. Deploy. The live URL serves `/assistant` and `/leads` exactly as locally.
+1. Sign in with GitHub → **New Project** → **Deploy from GitHub repo** → pick this repo.
+2. Open the service → **Variables** → add:
+   - `GOOGLE_API_KEY` = your key from https://aistudio.google.com/apikey
+   - `LLM_PROVIDER` = `gemini`
+   - `MODEL` = `gemini-3.5-flash,gemini-3.1-flash-lite`
+3. **Settings → Networking → Generate Domain** (without this the service runs but has no
+   public URL).
+4. The build and start commands come from `railway.json`; the first build takes a few
+   minutes. Then open `https://<your-domain>/assistant`.
 
-Anything that reads a `Procfile` (Railway, Heroku-style platforms) works too - same start
-command, and set `GOOGLE_API_KEY`, `LLM_PROVIDER=gemini` and `MODEL` as environment
-variables in that platform's dashboard.
+**Render** (https://render.com): New → **Blueprint** → pick the repo. It reads
+`render.yaml`, asks for `GOOGLE_API_KEY`, and the rest is set. Note Render now asks for
+card details on some accounts even for the free instance type.
 
-Three decisions in there worth knowing:
+Three decisions worth knowing:
 
-- **The model is retrained at deploy time** (`buildCommand` runs `part3_ml/train.py`)
-  rather than trusting the committed `model.pkl`. A pickle is tied to the scikit-learn
-  version that wrote it, and the version the platform installs will not always match mine.
-  Training takes a couple of seconds on 9,000 rows, so it is cheap insurance against a
-  deploy that boots and then cannot score anything.
+- **The model is retrained at build time** rather than trusting the committed
+  `model.pkl` - a pickle is tied to the scikit-learn version that wrote it, and the
+  version a platform installs will not always match mine. And if it still fails to load at
+  start-up, `app.py` rebuilds it from the committed CSV and carries on, so a deploy cannot
+  boot into a page that silently cannot score anything. Training takes about two seconds on
+  9,000 rows.
 - **gunicorn, one worker, eight threads.** Flask's dev server is not meant to face the
-  internet. One worker because each one loads its own copy of the model and the BM25
-  index; threads because the work is waiting on an API, not CPU.
-- **The free tier sleeps.** On Render's free plan the service spins down when idle, so the
-  first request after a quiet spell takes ~30 seconds to wake it. That is the platform, not
-  the app.
+  internet. One worker because each loads its own copy of the model and the BM25 index;
+  threads because the work is waiting on an API, not CPU.
+- **Free tiers sleep.** Both platforms spin a free service down when idle, so the first
+  request after a quiet spell takes ~30 seconds. That is the platform, not the app - worth
+  knowing before demoing it to anyone.
 
 ## Unfinished / what I'd do with more time
 

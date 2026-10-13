@@ -61,13 +61,36 @@ app = Flask(__name__)
 # Load the trained model once at start-up. If it is missing we keep serving the
 # pages and tell the user to run train.py, rather than refusing to boot.
 # ---------------------------------------------------------------------------
-BUNDLE = None
-MODEL_ERROR = None
-try:
-    BUNDLE = joblib.load(MODEL_PATH)
-except Exception as exc:
-    MODEL_ERROR = (f"Could not load part3_ml/model.pkl ({exc}). "
-                   f"Run: python part3_ml/train.py")
+def load_bundle():
+    """Load model.pkl, and if that fails, train it and try once more.
+
+    A joblib pickle is tied to the scikit-learn version that wrote it, and a hosting
+    platform will not always install the version I did. Rather than boot into a page that
+    cannot score anything, the app rebuilds the model from the committed CSV - it takes a
+    couple of seconds on 9,000 rows, and it is the same `train.py` the README documents.
+    The deploy configs also train at build time; this is the belt to that pair of braces,
+    and it means `python part4_web/app.py` works on a fresh clone even if someone has not
+    run Part 3 yet.
+
+    Returns (bundle, error_message). On failure the pages still load and say what to run.
+    """
+    try:
+        return joblib.load(MODEL_PATH), None
+    except Exception as first_error:
+        print(f"model.pkl could not be loaded ({first_error}); training it now...")
+        try:
+            sys.path.insert(0, os.path.join(_HERE, "..", "part3_ml"))
+            import train  # noqa: E402  (deliberately late: only needed on this path)
+
+            train.main()
+            return joblib.load(MODEL_PATH), None
+        except Exception as second_error:
+            return None, (f"Could not load part3_ml/model.pkl ({first_error}), and "
+                          f"rebuilding it failed ({second_error}). "
+                          f"Run: python part3_ml/train.py")
+
+
+BUNDLE, MODEL_ERROR = load_bundle()
 
 
 def band(score):

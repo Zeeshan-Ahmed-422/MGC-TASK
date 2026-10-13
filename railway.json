@@ -1,0 +1,14 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "// comment": "The model is TRAINED at build time rather than trusting the committed model.pkl: a pickle is tied to the scikit-learn version that wrote it, and the version the platform installs will not always match mine. Takes about two seconds on 9,000 rows. app.py also retrains on the fly if the pickle still will not load, so this is belt and braces.",
+    "buildCommand": "pip install -r requirements.txt && python part3_ml/train.py"
+  },
+  "deploy": {
+    "// comment": "gunicorn: Flask's dev server is not meant to face the internet. One worker because each loads its own copy of the model and the BM25 index; threads because the work is waiting on an API, not CPU.",
+    "startCommand": "gunicorn --chdir part4_web app:app --workers 1 --threads 8 --timeout 120 --bind 0.0.0.0:$PORT",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  }
+}
