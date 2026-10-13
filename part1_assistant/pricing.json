@@ -1,0 +1,107 @@
+{
+  "_comment": [
+    "HAND-TRANSCRIBED from data/docs/02_price_list_payment_plan.md (and areas from the brochure).",
+    "Nothing in this file is produced by an LLM, and no arithmetic is done by an LLM:",
+    "calculator.py does the maths in Python, this file is just the inputs.",
+    "Every number carries the document + section it came from so the salesperson can check it."
+  ],
+  "_documents": {
+    "price_list": "MGC Aurora Heights — Price List & Payment Plan",
+    "brochure": "MGC Aurora Heights — Project Brochure",
+    "faq": "MGC Developments — Booking Policy & Sales FAQ"
+  },
+  "currency": "PKR",
+
+  "unit_areas_sqft": {
+    "_source": { "document": "MGC Aurora Heights — Project Brochure", "section": "Unit Configuration" },
+    "Studio": 480,
+    "1-Bed Standard": 720,
+    "2-Bed Standard": 1150,
+    "2-Bed Corner": 1310,
+    "3-Bed Executive": 1880,
+    "4-Bed Penthouse": 3400
+  },
+
+  "base_prices": {
+    "A": {
+      "_source": { "document": "MGC Aurora Heights — Price List & Payment Plan", "section": "Base Prices (Block A)" },
+      "Studio": 8640000,
+      "1-Bed Standard": 13320000,
+      "2-Bed Standard": 21850000
+    },
+    "B": {
+      "_source": { "document": "MGC Aurora Heights — Price List & Payment Plan", "section": "Base Prices (Block B)" },
+      "1-Bed Standard": 13680000,
+      "2-Bed Standard": 22425000,
+      "2-Bed Corner": 26855000,
+      "3-Bed Executive": 39480000,
+      "4-Bed Penthouse": 88400000
+    }
+  },
+
+  "premiums": {
+    "_source": { "document": "MGC Aurora Heights — Price List & Payment Plan", "section": "Location Premiums" },
+    "_rule": "Applied on top of base price. The document states premiums are cumulative and gives the worked example: Margalla-facing corner on floor 15 = +4% +3% +6% = +13% over base. So they ADD as percentages of base; they do not compound.",
+    "floor_bands": [
+      { "label": "Floors 13–19", "min_floor": 13, "max_floor": 19, "pct": 4.0 },
+      { "label": "Floors 20–22", "min_floor": 20, "max_floor": 22, "pct": 7.0 }
+    ],
+    "corner": { "label": "Corner unit", "pct": 3.0 },
+    "margalla_facing": { "label": "Margalla-facing", "pct": 6.0 }
+  },
+
+  "discounts": {
+    "_source": { "document": "MGC Aurora Heights — Price List & Payment Plan", "section": "Discounts" },
+    "_rule": "All discount percentages are 'on base price'. The document says explicitly for full cash: 'Location premiums are not discounted.' We apply that rule to every discount, so the discount amount is always pct x BASE price, never pct x (base + premiums). The overseas 2% is described as 'additional ... stackable with the above', so percentages add (12+2 or 6+2); they do not compound.",
+    "full_cash": { "label": "Full cash payment", "pct": 12.0 },
+    "fifty_percent_upfront": { "label": "50% upfront", "pct": 6.0 },
+    "overseas_pakistani": { "label": "Overseas Pakistani (Roshan Digital Account)", "pct": 2.0 },
+    "second_unit": { "label": "Second unit by the same buyer", "pct": 1.5 },
+    "_excluded": "Discounts do not apply to commercial podium units."
+  },
+
+  "payment_plans": {
+    "standard": {
+      "_source": { "document": "MGC Aurora Heights — Price List & Payment Plan", "section": "Standard Payment Plan (4 years)" },
+      "label": "Standard Payment Plan (4 years)",
+      "milestones": [
+        { "milestone": "Booking / token", "pct": 10.0, "notes": "Non-refundable after 30 days" },
+        { "milestone": "Confirmation", "pct": 10.0, "notes": "Due within 45 days of booking" },
+        { "milestone": "16 quarterly instalments", "pct": 60.0, "notes": "3.75% each" },
+        { "milestone": "On possession", "pct": 20.0, "notes": "Due at handover" }
+      ]
+    }
+  },
+
+  "other_charges": {
+    "_source": { "document": "MGC Aurora Heights — Price List & Payment Plan", "section": "Other Charges" },
+    "_rule": "These sit OUTSIDE the unit price. The calculator lists them separately and never folds them into the quoted price.",
+    "utility_connection_and_meter": { "label": "Utility connection and meter charges", "amount": 285000, "per": "residential unit" },
+    "parking_slot_mandatory": { "label": "Parking slot (mandatory, 1 per unit)", "amount": 1450000, "per": "unit" },
+    "parking_slot_additional": { "label": "Additional parking slot", "amount": 1650000, "per": "slot" },
+    "maintenance_advance": { "label": "Maintenance advance (12 months)", "rate_per_sqft_per_month": 9.5, "months": 12, "notes": "Payable at possession" }
+  },
+
+  "known_conflicts": [
+    {
+      "topic": "transfer fee",
+      "keywords": ["transfer fee", "transfer fees", "transfer charge", "transfer charges", "transfer cost", "transferring"],
+      "question": "What is the transfer fee?",
+      "values": [
+        {
+          "value": "2% of the current list price",
+          "document": "MGC Aurora Heights — Price List & Payment Plan",
+          "section": "Other Charges",
+          "quote": "Transfer fee (before possession): 2% of the current list price"
+        },
+        {
+          "value": "2.5% of the current list price",
+          "document": "MGC Developments — Booking Policy & Sales FAQ",
+          "section": "Transfers",
+          "quote": "Transfer fee is 2.5% of the current list price."
+        }
+      ],
+      "action": "Do not pick one. Quote both with their sources and confirm with the marketing manager before quoting a customer."
+    }
+  ]
+}

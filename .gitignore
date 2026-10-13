@@ -1,0 +1,11 @@
+# Secrets - never commit the real key file
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# DuckDB files (we run in-memory, but just in case)
+*.duckdb
