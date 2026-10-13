@@ -1,19 +1,24 @@
+# Minimum versions rather than exact pins, deliberately: a reviewer running this in an
+# existing environment should not have packages downgraded underneath them, and nothing
+# here depends on a specific release. Tested on the versions in the comments.
+
 # Part 1 - document assistant
-rank-bm25==0.2.2          # BM25 keyword retrieval over the document chunks
-openai==1.66.3            # used for BOTH OpenAI and Google Gemini (OpenAI-compatible endpoint)
-anthropic==0.49.0         # optional third provider (LLM_PROVIDER=anthropic)
-python-dotenv==1.0.1      # loads .env
+rank-bm25>=0.2.2          # BM25 keyword retrieval over the document chunks  (0.2.2)
+openai>=1.60              # used for BOTH OpenAI and Google Gemini (Gemini exposes an
+                          # OpenAI-compatible endpoint)                      (1.66.3)
+anthropic>=0.40           # optional third provider (LLM_PROVIDER=anthropic) (1.13.0)
+python-dotenv>=1.0        # loads .env                                       (1.0.1)
 
 # Part 2 - SQL
-duckdb==1.2.1             # embedded SQL engine, no server needed
+duckdb>=1.0               # embedded SQL engine, no server needed            (1.2.1)
 
 # Part 3 - ML
-pandas==2.2.3
-scikit-learn==1.6.1
-joblib==1.4.2
+pandas>=2.0               #                                                  (2.2.3)
+scikit-learn>=1.3         #                                                  (1.6.1)
+joblib>=1.3               #                                                  (1.4.2)
 
 # Part 4 - web
-flask==3.1.0
+flask>=3.0                #                                                  (3.1.0)
 
-# used by run_test_questions.py / my own smoke tests of part 4
-requests==2.32.3
+# used by my own smoke tests of the Part 4 endpoints
+requests>=2.31            #                                                  (2.32.3)
