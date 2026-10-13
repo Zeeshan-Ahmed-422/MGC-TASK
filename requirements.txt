@@ -22,3 +22,8 @@ flask>=3.0                #                                                  (3.
 
 # used by my own smoke tests of the Part 4 endpoints
 requests>=2.31            #                                                  (2.32.3)
+
+# Deployment only - the production WSGI server used by Procfile/render.yaml. Installs
+# fine on Windows but only runs on Linux/macOS; local development uses `python
+# part4_web/app.py`, which does not need it.
+gunicorn>=21.2            #                                                  (26.2.0)

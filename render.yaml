@@ -1,0 +1,22 @@
+# Render blueprint - https://render.com. Importing this repo as a Blueprint picks all of
+# this up automatically; the only thing left to do by hand is paste the API key.
+services:
+  - type: web
+    name: mgc-sales-assistant
+    runtime: python
+    plan: free
+    # The model is TRAINED at deploy time rather than trusting the committed model.pkl:
+    # a pickle is tied to the scikit-learn version that wrote it, and the version Render
+    # installs will not always be mine. Training takes a couple of seconds on 9,000 rows.
+    buildCommand: pip install -r requirements.txt && python part3_ml/train.py
+    startCommand: gunicorn --chdir part4_web app:app --workers 1 --threads 8 --timeout 120 --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: MODEL
+        value: gemini-3.5-flash,gemini-3.1-flash-lite
+      # Set in the Render dashboard, never in the repo.
+      - key: GOOGLE_API_KEY
+        sync: false

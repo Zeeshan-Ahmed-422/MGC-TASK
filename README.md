@@ -527,6 +527,36 @@ collapses to a single column on a phone. If you would rather see it truly bare, 
 
 ---
 
+## Deploying it
+
+The repo is ready to deploy as-is; the only thing that cannot live in it is the API key.
+
+**Render** (free tier, what `render.yaml` is written for):
+
+1. New → **Blueprint** → connect this repo. Render reads `render.yaml`, so the build and
+   start commands and the Python version are already set.
+2. It will ask for `GOOGLE_API_KEY` (it is marked `sync: false`, so it is never stored in
+   the repo). Paste the key from https://aistudio.google.com/apikey.
+3. Deploy. The live URL serves `/assistant` and `/leads` exactly as locally.
+
+Anything that reads a `Procfile` (Railway, Heroku-style platforms) works too - same start
+command, and set `GOOGLE_API_KEY`, `LLM_PROVIDER=gemini` and `MODEL` as environment
+variables in that platform's dashboard.
+
+Three decisions in there worth knowing:
+
+- **The model is retrained at deploy time** (`buildCommand` runs `part3_ml/train.py`)
+  rather than trusting the committed `model.pkl`. A pickle is tied to the scikit-learn
+  version that wrote it, and the version the platform installs will not always match mine.
+  Training takes a couple of seconds on 9,000 rows, so it is cheap insurance against a
+  deploy that boots and then cannot score anything.
+- **gunicorn, one worker, eight threads.** Flask's dev server is not meant to face the
+  internet. One worker because each one loads its own copy of the model and the BM25
+  index; threads because the work is waiting on an API, not CPU.
+- **The free tier sleeps.** On Render's free plan the service spins down when idle, so the
+  first request after a quiet spell takes ~30 seconds to wake it. That is the platform, not
+  the app.
+
 ## Unfinished / what I'd do with more time
 
 Honestly:

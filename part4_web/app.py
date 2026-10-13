@@ -228,11 +228,19 @@ def port_already_in_use(host="127.0.0.1", port=5000):
 
 
 if __name__ == "__main__":
-    if port_already_in_use():
-        print("ERROR: something is already listening on 127.0.0.1:5000 - most likely an "
+    # Hosting platforms tell the app which port to listen on, and expect 0.0.0.0 rather
+    # than 127.0.0.1. Locally neither variable is set, so it stays on 127.0.0.1:5000.
+    # (In production gunicorn binds the socket itself and this block never runs - see
+    # the Procfile - but honouring PORT means `python part4_web/app.py` works as a
+    # fallback start command too.)
+    port = int(os.getenv("PORT", "5000"))
+    host = os.getenv("HOST", "0.0.0.0" if os.getenv("PORT") else "127.0.0.1")
+
+    if port_already_in_use(port=port):
+        print(f"ERROR: something is already listening on port {port} - most likely an "
               "older copy of this app.\n"
               "       Stop it first (Ctrl+C in its terminal), or on Windows:\n"
-              '         powershell "Get-NetTCPConnection -LocalPort 5000 -State Listen | '
+              f'         powershell "Get-NetTCPConnection -LocalPort {port} -State Listen | '
               'ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }"\n'
               "       Starting anyway would serve stale code without telling you.")
         sys.exit(1)
@@ -245,11 +253,12 @@ if __name__ == "__main__":
         print("      Both pages still load and lead scoring still works.")
     if MODEL_ERROR:
         print(f"NOTE: {MODEL_ERROR}")
-    print("\n  page 1: http://127.0.0.1:5000/assistant   (ask the documents)")
-    print("  page 2: http://127.0.0.1:5000/leads       (score a lead)\n")
+    shown_host = "127.0.0.1" if host == "0.0.0.0" else host
+    print(f"\n  page 1: http://{shown_host}:{port}/assistant   (ask the documents)")
+    print(f"  page 2: http://{shown_host}:{port}/leads       (score a lead)\n")
     # threaded=True so a slow question on page 1 does not block page 2 - the two modules
     # are genuinely usable at the same time, in two tabs. (Flask's default is already
     # threaded; it is passed explicitly because the behaviour is the point.)
     # debug=False: the reloader would import this module twice and reload the model and
     # the BM25 index with it.
-    app.run(host="127.0.0.1", port=5000, debug=False, threaded=True)
+    app.run(host=host, port=port, debug=False, threaded=True)
